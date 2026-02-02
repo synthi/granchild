@@ -1,3 +1,9 @@
+// Engine_ZGlut v3.0.2
+// Changelog:
+// - Fixed NaN propagation when buffer duration is zero (prevents audio engine silence).
+// - Improved readBuf logic with robust fallback for Mono/Stereo detection.
+// - Added 'distribution' parameter for Impulse/Dust interpolation.
+
 Engine_ZGlut : CroneEngine {
 	classvar nvoices = 4;
 
@@ -23,35 +29,39 @@ Engine_ZGlut : CroneEngine {
 				var isMono = false;
 				var openSuccess = false;
 
-				// Try to detect if file is Mono
+				// Attempt to detect channel count
 				if (sf.openRead(path), {
 					openSuccess = true;
 					if (sf.numChannels == 1, { isMono = true; });
 					sf.close;
 				});
 
-				// Load Left / Main Channel (always Channel 0)
-				Buffer.readChannel(context.server, path, 0, -1, [0], { arg newbuf;
-					voices[i].set(\buf, newbuf);
-					buffers[i].free;
-					buffers[i] = newbuf;
-
-					// Load Right / Secondary Channel
-					if (isMono, {
-						// Case: Mono File detected -> Duplicate Ch 0 to Ch 1 buffer
-						Buffer.readChannel(context.server, path, 0, -1, [0], { arg newbuf2;
-							voices[i].set(\buf2, newbuf2);
-							buffers[i+4].free;
-							buffers[i+4] = newbuf2;
-						});
-					}, {
-						// Case: Stereo or Detection Failed -> Try to load Ch 1
-						// If detection failed and it IS mono, this might be silent, but Ch 0 will work.
-						Buffer.readChannel(context.server, path, 0, -1, [1], { arg newbuf2;
-							voices[i].set(\buf2, newbuf2);
-							buffers[i+4].free;
-							buffers[i+4] = newbuf2;
-						});
+				// Load Logic
+				if (openSuccess and: isMono, {
+					// MONO DETECTED: Load Ch 0 to both buffers
+					Buffer.readChannel(context.server, path, 0, -1, [0], { arg newbuf;
+						voices[i].set(\buf, newbuf);
+						buffers[i].free;
+						buffers[i] = newbuf;
+					});
+					Buffer.readChannel(context.server, path, 0, -1, [0], { arg newbuf2;
+						voices[i].set(\buf2, newbuf2);
+						buffers[i+4].free;
+						buffers[i+4] = newbuf2;
+					});
+				}, {
+					// STEREO OR DETECTION FAILED: Default behavior
+					// Load Ch 0 to Left
+					Buffer.readChannel(context.server, path, 0, -1, [0], { arg newbuf;
+						voices[i].set(\buf, newbuf);
+						buffers[i].free;
+						buffers[i] = newbuf;
+					});
+					// Load Ch 1 to Right
+					Buffer.readChannel(context.server, path, 0, -1, [1], { arg newbuf2;
+						voices[i].set(\buf2, newbuf2);
+						buffers[i+4].free;
+						buffers[i+4] = newbuf2;
 					});
 				});
 			});
@@ -77,6 +87,7 @@ Engine_ZGlut : CroneEngine {
 			var trig_impulse, trig_dust;
 			var jitter_sig, jitter_sig2, jitter_sig3, jitter_sig4;
 			var buf_dur;
+			var buf_dur_safe;
 			var pan_sig;
 			var pan_sig2;
 			var buf_pos;
@@ -104,6 +115,9 @@ Engine_ZGlut : CroneEngine {
 			grain_trig = SelectX.kr(distribution, [trig_impulse, trig_dust]);
 
 			buf_dur = BufDur.kr(buf);
+			// SAFETY FIX: Prevent division by zero if buffer is empty or failed to load.
+			// This prevents NaN propagation which kills the audio engine.
+			buf_dur_safe = buf_dur.max(0.001);
 
 			pan_sig = TRand.kr(trig: grain_trig,
 				lo: -1,
@@ -114,20 +128,20 @@ Engine_ZGlut : CroneEngine {
 				hi: 1);
 
 			jitter_sig = TRand.kr(trig: grain_trig,
-				lo: buf_dur.reciprocal.neg * jitter,
-				hi: buf_dur.reciprocal * jitter);
+				lo: buf_dur_safe.reciprocal.neg * jitter,
+				hi: buf_dur_safe.reciprocal * jitter);
 			jitter_sig2 = TRand.kr(trig: grain_trig,
-				lo: buf_dur.reciprocal.neg * jitter,
-				hi: buf_dur.reciprocal * jitter);
+				lo: buf_dur_safe.reciprocal.neg * jitter,
+				hi: buf_dur_safe.reciprocal * jitter);
 			jitter_sig3 = TRand.kr(trig: grain_trig,
-				lo: buf_dur.reciprocal.neg * jitter,
-				hi: buf_dur.reciprocal * jitter);
+				lo: buf_dur_safe.reciprocal.neg * jitter,
+				hi: buf_dur_safe.reciprocal * jitter);
 			jitter_sig4 = TRand.kr(trig: grain_trig,
-				lo: buf_dur.reciprocal.neg * jitter,
-				hi: buf_dur.reciprocal * jitter);
+				lo: buf_dur_safe.reciprocal.neg * jitter,
+				hi: buf_dur_safe.reciprocal * jitter);
 
 			buf_pos = Phasor.kr(trig: t_reset_pos,
-				rate: buf_dur.reciprocal / ControlRate.ir * speed,
+				rate: buf_dur_safe.reciprocal / ControlRate.ir * speed,
 				resetPos: pos);
 
 			pos_sig = Wrap.kr(Select.kr(freeze, [buf_pos, pos]));
