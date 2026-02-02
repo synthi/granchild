@@ -19,16 +19,38 @@ Engine_ZGlut : CroneEngine {
 	readBuf { arg i, path;
 		if(buffers[i].notNil, {
 			if (File.exists(path), {
-				// load stereo files and duplicate GrainBuf for stereo granulation
-				var newbuf = Buffer.readChannel(context.server, path, 0, -1, [0], {
-					voices[i].set(\buf, newbuf);
-					buffers[i].free;
-					buffers[i] = newbuf;
+				// Fix: Check for mono/stereo file before loading
+				var sf = SoundFile.new;
+				var numChannels = 1;
+				if (sf.openRead(path), {
+					numChannels = sf.numChannels;
+					sf.close;
 				});
-				var newbuf2 = Buffer.readChannel(context.server, path, 0, -1, [1], {
-					voices[i].set(\buf2, newbuf2);
-					buffers[i+4].free;
-					buffers[i+4] = newbuf2;
+
+				if (numChannels == 1, {
+					// Mono file: Load channel 0 into BOTH buffers
+					var newbuf = Buffer.readChannel(context.server, path, 0, -1, [0], {
+						voices[i].set(\buf, newbuf);
+						buffers[i].free;
+						buffers[i] = newbuf;
+					});
+					var newbuf2 = Buffer.readChannel(context.server, path, 0, -1, [0], {
+						voices[i].set(\buf2, newbuf2);
+						buffers[i+4].free;
+						buffers[i+4] = newbuf2;
+					});
+				}, {
+					// Stereo file: Standard behavior
+					var newbuf = Buffer.readChannel(context.server, path, 0, -1, [0], {
+						voices[i].set(\buf, newbuf);
+						buffers[i].free;
+						buffers[i] = newbuf;
+					});
+					var newbuf2 = Buffer.readChannel(context.server, path, 0, -1, [1], {
+						voices[i].set(\buf2, newbuf2);
+						buffers[i+4].free;
+						buffers[i+4] = newbuf2;
+					});
 				});
 			});
 		});
@@ -44,13 +66,13 @@ Engine_ZGlut : CroneEngine {
 
 		SynthDef(\synth, {
 			arg out, effectBus, phase_out, level_out, buf, buf2,
-			gate=0, pos=0, speed=1, jitter=0, voice_pan=0,	
+			gate=0, pos=0, speed=1, jitter=0, voice_pan=0,
 			size=0.1, density=20, pitch=1, spread=0, gain=1, envscale=1,
-			freeze=0, t_reset_pos=0, cutoff=20000, q, mode=0, send=0,
-			subharmonics=0,overtones=0;
+			freeze=0, t_reset_pos=0, cutoff=20000, q=1, mode=0, send=0,
+			subharmonics=0, overtones=0, distribution=0; // distribution: 0=Impulse, 1=Dust
 
 			var grain_trig;
-			var trig_rnd;
+			var trig_impulse, trig_dust;
 			var jitter_sig, jitter_sig2, jitter_sig3, jitter_sig4;
 			var buf_dur;
 			var pan_sig;
@@ -72,8 +94,13 @@ Engine_ZGlut : CroneEngine {
 			q = Lag.kr(q);
 			send = Lag.kr(send);
 			pitch = Lag.kr(pitch,0.25);
-			
-			grain_trig = Impulse.kr(density);
+			distribution = Lag.kr(distribution);
+
+			// Interpolate between Impulse (Periodic) and Dust (Stochastic)
+			trig_impulse = Impulse.kr(density);
+			trig_dust = Dust.kr(density);
+			grain_trig = SelectX.kr(distribution, [trig_impulse, trig_dust]);
+
 			buf_dur = BufDur.kr(buf);
 
 			pan_sig = TRand.kr(trig: grain_trig,
@@ -104,114 +131,103 @@ Engine_ZGlut : CroneEngine {
 			pos_sig = Wrap.kr(Select.kr(freeze, [buf_pos, pos]));
 
 			sig = GrainBuf.ar(
-						numChannels: 2, 
-						trigger:grain_trig, 
-						dur:size, 
-						sndbuf:buf, 
-						pos: pos_sig + jitter_sig, 
-						interp: 2, 
+						numChannels: 2,
+						trigger:grain_trig,
+						dur:size,
+						sndbuf:buf,
+						pos: pos_sig + jitter_sig,
+						interp: 2,
 						pan: pan_sig,
 						rate:pitch,
 						maxGrains:96,
 						mul:main_vol,
 					)+
 				  GrainBuf.ar(
-						numChannels: 2, 
-						trigger:grain_trig, 
-						dur:size, 
-						sndbuf:buf2, 
-						pos: pos_sig + jitter_sig, 
-						interp: 2, 
+						numChannels: 2,
+						trigger:grain_trig,
+						dur:size,
+						sndbuf:buf2,
+						pos: pos_sig + jitter_sig,
+						interp: 2,
 						pan: pan_sig2,
 						rate:pitch,
 						maxGrains:96,
 						mul:main_vol,
 					)+
 				GrainBuf.ar(
-						numChannels: 2, 
-						trigger:grain_trig, 
-						dur:size, 
-						sndbuf:buf, 
-						pos: pos_sig + jitter_sig2, 
-						interp: 2, 
+						numChannels: 2,
+						trigger:grain_trig,
+						dur:size,
+						sndbuf:buf,
+						pos: pos_sig + jitter_sig2,
+						interp: 2,
 						pan: pan_sig,
 						rate:pitch/2,
 						maxGrains:72,
 						mul:subharmonic_vol,
 					)+
 				  GrainBuf.ar(
-						numChannels: 2, 
-						trigger:grain_trig, 
-						dur:size, 
-						sndbuf:buf2, 
-						pos: pos_sig + jitter_sig2, 
-						interp: 2, 
+						numChannels: 2,
+						trigger:grain_trig,
+						dur:size,
+						sndbuf:buf2,
+						pos: pos_sig + jitter_sig2,
+						interp: 2,
 						pan: pan_sig2,
 						rate:pitch/2,
 						maxGrains:72,
 						mul:subharmonic_vol,
 					)+
 				GrainBuf.ar(
-						numChannels: 2, 
-						trigger:grain_trig, 
-						dur:size, 
-						sndbuf:buf, 
-						pos: pos_sig + jitter_sig3, 
-						interp: 2, 
+						numChannels: 2,
+						trigger:grain_trig,
+						dur:size,
+						sndbuf:buf,
+						pos: pos_sig + jitter_sig3,
+						interp: 2,
 						pan: pan_sig,
 						rate:pitch*2,
 						maxGrains:32,
 						mul:overtone_vol*0.7,
 					)+
 				  GrainBuf.ar(
-						numChannels: 2, 
-						trigger:grain_trig, 
-						dur:size, 
-						sndbuf:buf2, 
-						pos: pos_sig + jitter_sig3, 
-						interp: 2, 
+						numChannels: 2,
+						trigger:grain_trig,
+						dur:size,
+						sndbuf:buf2,
+						pos: pos_sig + jitter_sig3,
+						interp: 2,
 						pan: pan_sig2,
 						rate:pitch*2,
 						maxGrains:32,
 						mul:overtone_vol*0.7,
 					)+
 				GrainBuf.ar(
-						numChannels: 2, 
-						trigger:grain_trig, 
-						dur:size, 
-						sndbuf:buf, 
-						pos: pos_sig + jitter_sig4, 
-						interp: 2, 
+						numChannels: 2,
+						trigger:grain_trig,
+						dur:size,
+						sndbuf:buf,
+						pos: pos_sig + jitter_sig4,
+						interp: 2,
 						pan: pan_sig,
 						rate:pitch*4,
 						maxGrains:24,
 						mul:overtone_vol*0.3,
 					)+
 				  GrainBuf.ar(
-						numChannels: 2, 
-						trigger:grain_trig, 
-						dur:size, 
-						sndbuf:buf2, 
-						pos: pos_sig + jitter_sig4, 
-						interp: 2, 
+						numChannels: 2,
+						trigger:grain_trig,
+						dur:size,
+						sndbuf:buf2,
+						pos: pos_sig + jitter_sig4,
+						interp: 2,
 						pan: pan_sig2,
 						rate:pitch*4,
 						maxGrains:24,
 						mul:overtone_vol*0.3,
 					)
 				  ;
-						// maxGrains:[128,256,64,128,64]/2,
-						// mul:[0.125,0.625,0.05,0.15,0.05]/2,
-			// sig = GrainBuf.ar(
-			// 	numChannels: 2, 
-			// 	trigger:grain_trig, 
-			// 	dur:size, 
-			// 	sndbuf: [buf,buf2], 
-			// 	pos: pos_sig + jitter_sig, 
-			// 	interp: 2, 
-			// 	pan: pan_sig,
-			// 	rate: pitch, 
-			// 	);
+
 			sig = BLowPass4.ar(sig, cutoff, q);
 			sig = Compander.ar(sig,sig,0.25)/2;
 			sig = Balance2.ar(sig[0],sig[1],voice_pan);
@@ -237,7 +253,7 @@ Engine_ZGlut : CroneEngine {
 
 		// delay bus
     effectBus = Bus.audio(context.server, 2);
-    
+
 		effect = Synth.new(\effect, [\in, effectBus.index, \out, context.out_b.index], target: context.xg);
 
 		phases = Array.fill(nvoices, { arg i; Bus.control(context.server); });
@@ -363,35 +379,40 @@ Engine_ZGlut : CroneEngine {
 			var voice = msg[1] - 1;
 			voices[voice].set(\envscale, msg[2]);
 		});
-		
+
 		this.addCommand("cutoff", "if", { arg msg;
 		var voice = msg[1] -1;
 		voices[voice].set(\cutoff, msg[2]);
 		});
-		
+
 		this.addCommand("q", "if", { arg msg;
 		var voice = msg[1] -1;
 		voices[voice].set(\q, msg[2]);
 		});
-		
+
 		this.addCommand("send", "if", { arg msg;
 		var voice = msg[1] -1;
 		voices[voice].set(\send, msg[2]);
 		});
-		
+
 		this.addCommand("volume", "if", { arg msg;
 			var voice = msg[1] - 1;
 			voices[voice].set(\gain, msg[2]);
 		});
-		
+
 		this.addCommand("overtones", "if", { arg msg;
 			var voice = msg[1] - 1;
 			voices[voice].set(\overtones, msg[2]);
 		});
-		
+
 		this.addCommand("subharmonics", "if", { arg msg;
 			var voice = msg[1] - 1;
 			voices[voice].set(\subharmonics, msg[2]);
+		});
+
+		this.addCommand("distribution", "if", { arg msg;
+			var voice = msg[1] - 1;
+			voices[voice].set(\distribution, msg[2]);
 		});
 
 		nvoices.do({ arg i;
@@ -399,11 +420,6 @@ Engine_ZGlut : CroneEngine {
 				var val = phases[i].getSynchronous;
 				val
 			});
-
-		// 	this.addPoll(("level_" ++ (i+1)).asSymbol, {
-		// 		var val = levels[i].getSynchronous;
-		// 		val
-		// 	});
 	 });
 
 		seek_tasks = Array.fill(nvoices, { arg i;
