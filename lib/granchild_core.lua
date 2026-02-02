@@ -82,15 +82,30 @@ function Granchild:new(args)
     {name="overtones",range={0,0.2},lfo={36,60}},
   }
   m.mod_vals={}
+  m.mod_state={} -- State for S&H and Slew
 
   for i=1,m.num_voices do
     m.mod_vals[i]={}
+    m.mod_state[i]={}
     for j,mod in ipairs(mod_parameters) do
       local minmax=mod.range
       local range=minmax
-      -- local center_val=(range[2]-range[1])/2
-      -- range={range[1]+(center_val-range[1])*math.random(0,100)/100,range[2]-(range[2]-center_val)*math.random(0,100)/100}
       m.mod_vals[i][j]={name=mod.name,minmax=minmax,range=range,period=math.random(mod.lfo[1],mod.lfo[2]),offset=math.random()*30}
+      m.mod_state[i][j]={
+        last_phase=0,
+        sample=0,
+        target=0,
+        slew_val=0
+      }
+    end
+  end
+  
+  -- Store current modulated values for UI retrieval
+  m.current_mod_values={}
+  for i=1,m.num_voices do
+    m.current_mod_values[i]={}
+    for j,mod in ipairs(mod_parameters) do
+      m.current_mod_values[i][mod.name] = 0
     end
   end
 
@@ -125,7 +140,7 @@ function Granchild:new(args)
 
   -- metro for checking if keys are held to toggle re-presses
   m.key_held=metro.init()
-  m.key_held.time=0.1
+  m.key_held.time=0.04 -- SPEED UP: 25Hz for faster grid response
   m.key_held.event=function()
     -- only on column 1, 5, 9, 13
     local cols={1,5,9,13}
@@ -134,7 +149,7 @@ function Granchild:new(args)
       for row=1,8 do
         if m.pressed_buttons[row..","..col]~=nil then
           local elapsed_time=cur_time-m.pressed_buttons[row..","..col]
-          if elapsed_time>0.1 then
+          if elapsed_time>0.04 then
             m:key_press(row,col,true)
           end
         end
@@ -214,19 +229,8 @@ function Granchild:key_press(row,col,on)
   end
   if on then
     self.pressed_buttons[row..","..col]=self:current_time()
-    -- if row==8 and col==2 and self.toggleable then
-    --   self.kill_timer=self:current_time()
-    -- end
   else
     self.pressed_buttons[row..","..col]=nil
-    -- if row==8 and col==2 and self.toggleable then
-    --   self.kill_timer=self:current_time()-self.kill_timer
-    --   if self.kill_timer>1 then
-    --     print("switching!")
-    --     self:toggle_grid(false)
-    --   end
-    --   self.kill_timer=0
-    -- end
   end
 
   if (col%4==2 or col%4==3 or col%4==0) and row<7 and on then
@@ -366,6 +370,10 @@ function Granchild:change_position(row,col)
   params:set(voice.."seek"..params:get(voice.."scene"),util.linlin(1,num_steps,0,1,val)+(math.random()-0.5)/100)
 end
 
+-- Helper to get the value with LFO applied for UI
+function Granchild:get_modulated_value(voice, param_name)
+    return self.current_mod_values[voice][param_name]
+end
 
 function Granchild:get_visual()
   --- update the blinky thing
@@ -412,9 +420,9 @@ function Granchild:get_visual()
     end
   end
 
-  -- show density modifiers
+  -- show density modifiers (Visualizing Modulated Value)
   for i=1,self.num_voices do
-    local val=util.linlin(1,40,0,15,params:get(i.."density"..params:get(i.."scene")))
+    local val=util.linlin(1,40,0,15, self:get_modulated_value(i, "density"))
     local col=4*(i-1)+1
     self.visual[1][col]=util.round(val)
     self.visual[2][col]=15-util.round(val)
@@ -422,7 +430,7 @@ function Granchild:get_visual()
 
   -- show size modifiers
   for i=1,self.num_voices do
-    local val=util.linlin(1,15,0,15,params:get(i.."size"..params:get(i.."scene")))
+    local val=util.linlin(1,15,0,15, self:get_modulated_value(i, "size"))
     local col=4*(i-1)+1
     self.visual[3][col]=util.round(val)
     self.visual[4][col]=15-util.round(val)
@@ -430,7 +438,7 @@ function Granchild:get_visual()
 
   -- show speed modifiers
   for i=1,self.num_voices do
-    local val=util.linlin(-2,2,0,15,params:get(i.."speed"..params:get(i.."scene")))
+    local val=util.linlin(-2,2,0,15, self:get_modulated_value(i, "speed"))
     local col=4*(i-1)+1
     self.visual[5][col]=util.round(val)
     self.visual[6][col]=15-util.round(val)
@@ -438,7 +446,7 @@ function Granchild:get_visual()
 
   -- show the volume
   for i=1,self.num_voices do
-    local val=util.linlin(0,4,0,15,params:get(i.."volume"..params:get(i.."scene")))
+    local val=util.linlin(0,4,0,15, self:get_modulated_value(i, "volume"))
     local col=4*(i-1)+1
     self.visual[7][col]=util.round(val)
     self.visual[8][col]=15-util.round(val)
@@ -550,22 +558,91 @@ end
 -- lfo stuff
 function Granchild:update_lfos()
   for i=1,self.num_voices do
-    if params:get(i.."play"..params:get(i.."scene"))==2 then
+    local scene = params:get(i.."scene")
+    if params:get(i.."play"..scene)==2 then
       for j,m in ipairs(self.mod_vals[i]) do
-        if params:get(i..m.name.."lfo"..params:get(i.."scene"))==2 then
-          params:set(i..m.name..params:get(i.."scene"),util.clamp(util.linlin(-1,1,m.range[1],m.range[2],self:calculate_lfo(m.period,m.offset)),m.minmax[1],m.minmax[2]))
+        local lfo_active = params:get(i..m.name.."lfo"..scene) == 2
+        local base_val = params:get(i..m.name..scene)
+        local final_val = base_val
+        
+        if lfo_active then
+          local depth = params:get(i..m.name.."depth"..scene)
+          local shape = params:get(i..m.name.."shape"..scene)
+          local lfo_val = self:calculate_lfo(m.period, m.offset, shape, i, j)
+          
+          -- Calculate Offset: range * lfo (-1 to 1) * depth
+          local range_span = m.range[2] - m.range[1]
+          local offset = (range_span / 2) * lfo_val * depth
+          
+          final_val = util.clamp(base_val + offset, m.minmax[1], m.minmax[2])
+          
+          -- Send to Engine DIRECTLY (Non-destructive)
+          -- Note: Engine commands are usually named exactly as the param
+          if m.name == "volume" then
+             engine.gain(i, final_val)
+          else
+             -- Use engine[command](voice, value) pattern
+             if engine[m.name] then
+               if m.name == "size" then
+                   -- Size needs special scaling as per original code
+                   engine.size(i, util.clamp(final_val*clock.get_beat_sec()/10, 0.001, util.linlin(1,40,1,0.1, params:get(i.."density"..scene))))
+               elseif m.name == "jitter" then
+                   engine.jitter(i, final_val/1000)
+               elseif m.name == "spread" then
+                   engine.spread(i, final_val/100)
+               else
+                   engine[m.name](i, final_val)
+               end
+             end
+          end
+        else
+            -- If LFO is inactive, we still need to ensure visual matches param
+            final_val = base_val
+            -- We don't need to send to engine here constantly because param set_action does it, 
+            -- but for safety in this loop structure we rely on set_action unless we want to force it.
+            -- Leaving engine update to params when LFO is off.
         end
+        
+        -- Store for UI
+        self.current_mod_values[i][m.name] = final_val
       end
     end
   end
 end
 
-function Granchild:calculate_lfo(period_in_beats,offset)
-  if period_in_beats==0 then
-    return 1
-  else
-    return math.sin(2*math.pi*clock.get_beats()/period_in_beats+offset)
+function Granchild:calculate_lfo(period_in_beats, offset, shape, voice_idx, mod_idx)
+  if period_in_beats==0 then return 0 end
+  
+  local phase = (clock.get_beats() / period_in_beats + offset) % 1
+  local val = 0
+  
+  -- 1=Sine, 2=Tri, 3=Saw, 4=Square, 5=Random, 6=Slew Random
+  if shape == 1 then -- Sine
+    val = math.sin(2 * math.pi * phase)
+  elseif shape == 2 then -- Triangle
+    val = 2 * math.abs(2 * phase - 1) - 1
+  elseif shape == 3 then -- Saw
+    val = 2 * phase - 1
+  elseif shape == 4 then -- Square
+    val = phase < 0.5 and 1 or -1
+  elseif shape == 5 or shape == 6 then -- Random / Slew
+    local state = self.mod_state[voice_idx][mod_idx]
+    -- Detect phase wrap for new random value
+    if phase < state.last_phase then
+        state.sample = state.target
+        state.target = math.random() * 2 - 1
+    end
+    state.last_phase = phase
+    
+    if shape == 5 then -- S&H
+        val = state.target
+    else -- Slew Random
+        -- Interpolate between sample and target based on phase
+        val = state.sample + (state.target - state.sample) * phase
+    end
   end
+  
+  return val
 end
 
 function Granchild:rec_start(voice)
