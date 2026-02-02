@@ -19,37 +19,39 @@ Engine_ZGlut : CroneEngine {
 	readBuf { arg i, path;
 		if(buffers[i].notNil, {
 			if (File.exists(path), {
-				// Fix: Check for mono/stereo file before loading
 				var sf = SoundFile.new;
-				var numChannels = 1;
+				var isMono = false;
+				var openSuccess = false;
+
+				// Try to detect if file is Mono
 				if (sf.openRead(path), {
-					numChannels = sf.numChannels;
+					openSuccess = true;
+					if (sf.numChannels == 1, { isMono = true; });
 					sf.close;
 				});
 
-				if (numChannels == 1, {
-					// Mono file: Load channel 0 into BOTH buffers
-					var newbuf = Buffer.readChannel(context.server, path, 0, -1, [0], {
-						voices[i].set(\buf, newbuf);
-						buffers[i].free;
-						buffers[i] = newbuf;
-					});
-					var newbuf2 = Buffer.readChannel(context.server, path, 0, -1, [0], {
-						voices[i].set(\buf2, newbuf2);
-						buffers[i+4].free;
-						buffers[i+4] = newbuf2;
-					});
-				}, {
-					// Stereo file: Standard behavior
-					var newbuf = Buffer.readChannel(context.server, path, 0, -1, [0], {
-						voices[i].set(\buf, newbuf);
-						buffers[i].free;
-						buffers[i] = newbuf;
-					});
-					var newbuf2 = Buffer.readChannel(context.server, path, 0, -1, [1], {
-						voices[i].set(\buf2, newbuf2);
-						buffers[i+4].free;
-						buffers[i+4] = newbuf2;
+				// Load Left / Main Channel (always Channel 0)
+				Buffer.readChannel(context.server, path, 0, -1, [0], { arg newbuf;
+					voices[i].set(\buf, newbuf);
+					buffers[i].free;
+					buffers[i] = newbuf;
+
+					// Load Right / Secondary Channel
+					if (isMono, {
+						// Case: Mono File detected -> Duplicate Ch 0 to Ch 1 buffer
+						Buffer.readChannel(context.server, path, 0, -1, [0], { arg newbuf2;
+							voices[i].set(\buf2, newbuf2);
+							buffers[i+4].free;
+							buffers[i+4] = newbuf2;
+						});
+					}, {
+						// Case: Stereo or Detection Failed -> Try to load Ch 1
+						// If detection failed and it IS mono, this might be silent, but Ch 0 will work.
+						Buffer.readChannel(context.server, path, 0, -1, [1], { arg newbuf2;
+							voices[i].set(\buf2, newbuf2);
+							buffers[i+4].free;
+							buffers[i+4] = newbuf2;
+						});
 					});
 				});
 			});
