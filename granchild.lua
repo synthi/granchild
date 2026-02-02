@@ -1,4 +1,4 @@
--- granchild v2.1.2
+-- granchild v3.0.0
 -- granular sequencer
 --
 -- llllllll.co/t/granchild
@@ -9,21 +9,27 @@
 
 engine.name="ZGlut"
 
-local granchild=include("granchild/lib/granchild")
+-- Updated reference to new core file
+local granchild=include("granchild/lib/granchild_core")
 
 local position={1,1}
 local press_positions={{0,0},{0,0}}
 local norns_screen={}
 local divisions={1,2,4,6,8,12,16}
 local division_names={"2 wn","wn","hn","hn-t","qn","qn-t","eighth"}
-local param_list={"overtones","overtoneslfo","subharmonics","subharmonicslfo","sizelfo","densitylfo","speedlfo","volumelfo","spreadlfo","jitterlfo","spread","jitter","size","pos","q","division","speed","send","q","cutoff","fade","pitch","density","pan","volume","seek","play","sample"}
+local param_list={"overtones","overtoneslfo","subharmonics","subharmonicslfo","sizelfo","densitylfo","speedlfo","volumelfo","spreadlfo","jitterlfo","spread","jitter","size","pos","q","division","speed","send","q","cutoff","fade","pitch","density","pan","volume","seek","play","sample","distribution"}
 local param_list_delay={"delay_volume","delay_mod_freq","delay_mod_depth","delay_fdbk","delay_diff","delay_damp","delay_size","delay_time"}
+
+local lfo_shapes = {"Sine", "Tri", "Saw", "Square", "S&H", "Slew"}
 
 local function bang(scene)
   for i=1,4 do
     for _,param_name in ipairs(param_list) do
-      local p=params:lookup_param(i..param_name..scene)
-      p:bang()
+      -- Check if param exists (some lfo params might not be in this list directly or handled differently)
+      if params:lookup_param(i..param_name..scene) then
+        local p=params:lookup_param(i..param_name..scene)
+        p:bang()
+      end
     end
     local p=params:lookup_param(i.."pattern"..scene)
     p:bang()
@@ -39,15 +45,29 @@ local function setup_params()
   local num_voices=4
   local old_volume={0.25,0.25,0.25,0.25}
   for i=1,num_voices do
-    params:add_group("sample "..i,56)
+    params:add_group("sample "..i,72) -- Increased group size for new LFO params
     params:add_option(i.."scene","scene",{"a","b"},1)
     params:set_action(i.."scene",function(scene)
       for _,param_name in ipairs(param_list) do
-        params:hide(i..param_name..(3-scene))
-        params:show(i..param_name..scene)
-        local p=params:lookup_param(i..param_name..scene)
-        p:bang()
+        -- Hide/Show logic for extended params (lfo depth/shape) handled in naming convention
+        if params:lookup_param(i..param_name..(3-scene)) then
+            params:hide(i..param_name..(3-scene))
+        end
+        if params:lookup_param(i..param_name..scene) then
+            params:show(i..param_name..scene)
+            local p=params:lookup_param(i..param_name..scene)
+            p:bang()
+        end
       end
+      -- Also hide/show the new specific LFO params that might not be in param_list
+      local lfo_targets = {"density", "size", "speed", "volume", "jitter", "spread", "subharmonics", "overtones"}
+      for _, target in ipairs(lfo_targets) do
+         params:hide(i..target.."depth"..(3-scene))
+         params:hide(i..target.."shape"..(3-scene))
+         params:show(i..target.."depth"..scene)
+         params:show(i..target.."shape"..scene)
+      end
+
       local p=params:lookup_param(i.."pattern"..scene)
       p:bang()
       if params:get(i.."pattern"..scene)=="" or params:get(i.."pattern"..scene)=="[]" then
@@ -90,6 +110,8 @@ local function setup_params()
         old_volume[i]=value
       end)
       params:add_option(i.."volumelfo"..scene,"volume lfo",{"off","on"},1)
+      params:add_control(i.."volumedepth"..scene,"volume depth",controlspec.new(0,1,"lin",0.01,0.5))
+      params:add_option(i.."volumeshape"..scene,"volume shape",lfo_shapes,1)
 
       params:add_control(i.."pan"..scene,"pan",controlspec.new(-1,1,"lin",0.01,0,"",0.01/1))
       params:set_action(i.."pan"..scene,function(value) engine.pan(i,value) end)
@@ -97,6 +119,12 @@ local function setup_params()
       params:add_control(i.."density"..scene,"density",controlspec.new(1,40,"lin",1,12,"/beat",1/40))
       params:set_action(i.."density"..scene,function(value) engine.density(i,value/(4*clock.get_beat_sec())) end)
       params:add_option(i.."densitylfo"..scene,"density lfo",{"off","on"},1)
+      params:add_control(i.."densitydepth"..scene,"density depth",controlspec.new(0,1,"lin",0.01,0.5))
+      params:add_option(i.."densityshape"..scene,"density shape",lfo_shapes,1)
+      
+      -- New Parameter: Chaos/Distribution
+      params:add_control(i.."distribution"..scene, "chaos", controlspec.new(0, 1, "lin", 0.01, 0, "", 0.01))
+      params:set_action(i.."distribution"..scene, function(value) engine.distribution(i, value) end)
 
       params:add_control(i.."pitch"..scene,"pitch",controlspec.new(-48,48,"lin",1,0,"note",1/96))
       params:set_action(i.."pitch"..scene,function(value) engine.pitch(i,math.pow(0.5,-value/12)) end)
@@ -116,6 +144,8 @@ local function setup_params()
       params:add_control(i.."speed"..scene,"speed",controlspec.new(-2.0,2.0,"lin",0.1,0,"",0.1/4))
       params:set_action(i.."speed"..scene,function(value) engine.speed(i,value) end)
       params:add_option(i.."speedlfo"..scene,"speed lfo",{"off","on"},1)
+      params:add_control(i.."speeddepth"..scene,"speed depth",controlspec.new(0,1,"lin",0.01,0.5))
+      params:add_option(i.."speedshape"..scene,"speed shape",lfo_shapes,1)
 
       params:add_option(i.."division"..scene,"division",division_names,5)
       params:set_action(i.."division"..scene,function(value)
@@ -132,22 +162,32 @@ local function setup_params()
         engine.size(i,util.clamp(value*clock.get_beat_sec()/10,0.001,util.linlin(1,40,1,0.1,params:get(i.."density"..scene))))
       end)
       params:add_option(i.."sizelfo"..scene,"size lfo",{"off","on"},1)
+      params:add_control(i.."sizedepth"..scene,"size depth",controlspec.new(0,1,"lin",0.01,0.5))
+      params:add_option(i.."sizeshape"..scene,"size shape",lfo_shapes,1)
 
       params:add_taper(i.."jitter"..scene,"jitter",0,500,0,5,"ms")
       params:set_action(i.."jitter"..scene,function(value) engine.jitter(i,value/1000) end)
       params:add_option(i.."jitterlfo"..scene,"jitter lfo",{"off","on"},2)
+      params:add_control(i.."jitterdepth"..scene,"jitter depth",controlspec.new(0,1,"lin",0.01,0.5))
+      params:add_option(i.."jittershape"..scene,"jitter shape",lfo_shapes,1)
 
       params:add_taper(i.."spread"..scene,"spread",0,100,0,0,"%")
       params:set_action(i.."spread"..scene,function(value) engine.spread(i,value/100) end)
       params:add_option(i.."spreadlfo"..scene,"spread lfo",{"off","on"},2)
+      params:add_control(i.."spreaddepth"..scene,"spread depth",controlspec.new(0,1,"lin",0.01,0.5))
+      params:add_option(i.."spreadshape"..scene,"spread shape",lfo_shapes,1)
 
       params:add_control(i.."subharmonics"..scene,"subharmonic vol",controlspec.new(0.00,1.00,"lin",0.01,0))
       params:set_action(i.."subharmonics"..scene,function(value) engine.subharmonics(i,value) end)
       params:add_option(i.."subharmonicslfo"..scene,"subharmonic lfo",{"off","on"},1)
+      params:add_control(i.."subharmonicsdepth"..scene,"subharmonic depth",controlspec.new(0,1,"lin",0.01,0.5))
+      params:add_option(i.."subharmonicsshape"..scene,"subharmonic shape",lfo_shapes,1)
 
       params:add_control(i.."overtones"..scene,"overtone vol",controlspec.new(0.00,1.00,"lin",0.01,0))
       params:set_action(i.."overtones"..scene,function(value) engine.overtones(i,value) end)
       params:add_option(i.."overtoneslfo"..scene,"overtone lfo",{"off","on"},1)
+      params:add_control(i.."overtonesdepth"..scene,"overtone depth",controlspec.new(0,1,"lin",0.01,0.5))
+      params:add_option(i.."overtonesshape"..scene,"overtone shape",lfo_shapes,1)
 
       params:add_text(i.."pattern"..scene,"pattern","")
       params:hide(i.."pattern"..scene)
@@ -206,6 +246,12 @@ local function setup_params()
     for _,param_name in ipairs(param_list) do
       params:hide(i..param_name.."2")
     end
+    -- Also hide the new LFO params for scene 2
+    local lfo_targets = {"density", "size", "speed", "volume", "jitter", "spread", "subharmonics", "overtones"}
+    for _, target in ipairs(lfo_targets) do
+         params:hide(i..target.."depth2")
+         params:hide(i..target.."shape2")
+    end
   end
   for _,param_name in ipairs(param_list_delay) do
     params:hide(param_name.."2")
@@ -216,6 +262,19 @@ end
 
 function init()
   setup_params()
+
+  -- PSET LOAD HOOK: Ensure engine is synced when loading a preset
+  params.action_loaded = function()
+    local current_scene = 1 -- Default to A
+    -- Try to find which scene is active for voice 1 as a proxy, or loop all
+    -- But since bang(scene) bangs everything for that scene, we need to know.
+    -- Actually, simpler to just bang whatever the params say is active.
+    for i=1,4 do
+        local s = params:get(i.."scene")
+        bang(s)
+    end
+    print("PSET Loaded: State Synced.")
+  end
 
   granchild_grid=granchild:new({grid_on=true,toggleable=false})
   -- local kolor = include("kolor/lib/kolor")
