@@ -722,7 +722,10 @@ function Granchild:rec_stop()
     end
     -- load the tape into the current voice
     print("saved to '"..tape_name.."'")
+    
+    -- Wait for FS write to settle before loading
     clock.sleep(1)
+    
     for i=1,2 do
       softcut.rec(i,0)
       softcut.play(i,0)
