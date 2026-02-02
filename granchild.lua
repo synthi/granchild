@@ -1,4 +1,4 @@
--- granchild v3.0.0
+-- granchild v3.0.1
 -- granular sequencer
 --
 -- llllllll.co/t/granchild
@@ -141,7 +141,8 @@ local function setup_params()
       params:add_control(i.."send"..scene,"delay send",controlspec.new(0.0,1.0,"lin",0.01,0.2))
       params:set_action(i.."send"..scene,function(value) engine.send(i,value) end)
 
-      params:add_control(i.."speed"..scene,"speed",controlspec.new(-2.0,2.0,"lin",0.1,0,"",0.1/4))
+      -- FIX: Speed resolution increased to 0.01 for better control with accelerated grid
+      params:add_control(i.."speed"..scene,"speed",controlspec.new(-2.0,2.0,"lin",0.01,0,"",0.01/4))
       params:set_action(i.."speed"..scene,function(value) engine.speed(i,value) end)
       params:add_option(i.."speedlfo"..scene,"speed lfo",{"off","on"},1)
       params:add_control(i.."speeddepth"..scene,"speed depth",controlspec.new(0,1,"lin",0.01,0.5))
