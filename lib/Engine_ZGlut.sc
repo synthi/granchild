@@ -1,9 +1,8 @@
-// Engine_ZGlut v3.0.4
+// Engine_ZGlut v3.0.5
 // Changelog:
-// - REMOVED SoundFile class usage completely to prevent _SFOpenRead crashes.
-// - Implemented "Cascade Loading" for robust Mono/Stereo support without file inspection.
-// - Fixed NaN propagation in SynthDef (buf_dur protection).
-// - Added 'distribution' parameter.
+// - CRITICAL FIX: Restored keyword arguments for GrainBuf.ar to fix argument mismatch (caused "Too many grains" and silence).
+// - Kept robust "Cascade Loading" for Mono/Stereo (No SoundFile class).
+// - Kept NaN protection.
 
 Engine_ZGlut : CroneEngine {
 	classvar nvoices = 4;
@@ -24,41 +23,32 @@ Engine_ZGlut : CroneEngine {
 
 	// disk read
 	readBuf { arg i, path;
-		// FORCE String conversion just in case, though we don't use SFOpenRead anymore.
 		var pathStr = path.asString;
 
 		if(buffers[i].notNil, {
 			if (File.exists(pathStr), {
-				// ROBUST LOADING STRATEGY (No SoundFile class):
-				// 1. Load Ch 0 to Left Buffer.
-				// 2. Load Ch 0 to Right Buffer (Dual Mono Fallback).
-				// 3. Attempt to load Ch 1 to Right Buffer (Stereo Overwrite).
-
-				// Step 1: Load Left (Ch 0)
+				// ROBUST LOADING STRATEGY (Cascade):
+				// 1. Load Ch 0 to Left.
+				// 2. Load Ch 0 to Right (Fallback).
+				// 3. Try Load Ch 1 to Right (Stereo).
+				
 				Buffer.readChannel(context.server, pathStr, 0, -1, [0], { arg newbufL;
 					voices[i].set(\buf, newbufL);
 					buffers[i].free;
 					buffers[i] = newbufL;
 
-					// Step 2: Load Right with Ch 0 (Safe Fallback)
 					Buffer.readChannel(context.server, pathStr, 0, -1, [0], { arg newbufR_Mono;
 						voices[i].set(\buf2, newbufR_Mono);
 						buffers[i+4].free;
 						buffers[i+4] = newbufR_Mono;
 
-						// Step 3: Attempt to load Right with Ch 1 (Stereo)
-						// If this fails (file is mono), we still have the Ch 0 fallback in place.
-						// We use a separate buffer alloc for the attempt to not kill the fallback immediately if it fails?
-						// Actually, Buffer.readChannel simply won't fill if channel doesn't exist.
-						// But to be safe, we just trigger it. If it works, it replaces.
 						Buffer.readChannel(context.server, pathStr, 0, -1, [1], { arg newbufR_Stereo;
-							// If we got here and have data, update the voice
 							if(newbufR_Stereo.numFrames > 0, {
 								voices[i].set(\buf2, newbufR_Stereo);
 								buffers[i+4].free;
 								buffers[i+4] = newbufR_Stereo;
 							}, {
-								newbufR_Stereo.free; // Clean up if empty
+								newbufR_Stereo.free;
 							});
 						});
 					});
@@ -113,7 +103,6 @@ Engine_ZGlut : CroneEngine {
 			grain_trig = SelectX.kr(distribution, [trig_impulse, trig_dust]);
 
 			buf_dur = BufDur.kr(buf);
-			// SAFETY FIX: Prevent NaN propagation
 			buf_dur_safe = buf_dur.max(0.001);
 
 			pan_sig = TRand.kr(trig: grain_trig, lo: -1, hi: (2*spread)-1);
@@ -130,14 +119,18 @@ Engine_ZGlut : CroneEngine {
 
 			pos_sig = Wrap.kr(Select.kr(freeze, [buf_pos, pos]));
 
-			sig = GrainBuf.ar(2, grain_trig, size, buf, pos_sig + jitter_sig, 2, pan_sig, pitch, 96, main_vol) +
-				  GrainBuf.ar(2, grain_trig, size, buf2, pos_sig + jitter_sig, 2, pan_sig2, pitch, 96, main_vol) +
-				  GrainBuf.ar(2, grain_trig, size, buf, pos_sig + jitter_sig2, 2, pan_sig, pitch/2, 72, subharmonic_vol) +
-				  GrainBuf.ar(2, grain_trig, size, buf2, pos_sig + jitter_sig2, 2, pan_sig2, pitch/2, 72, subharmonic_vol) +
-				  GrainBuf.ar(2, grain_trig, size, buf, pos_sig + jitter_sig3, 2, pan_sig, pitch*2, 32, overtone_vol*0.7) +
-				  GrainBuf.ar(2, grain_trig, size, buf2, pos_sig + jitter_sig3, 2, pan_sig2, pitch*2, 32, overtone_vol*0.7) +
-				  GrainBuf.ar(2, grain_trig, size, buf, pos_sig + jitter_sig4, 2, pan_sig, pitch*4, 24, overtone_vol*0.3) +
-				  GrainBuf.ar(2, grain_trig, size, buf2, pos_sig + jitter_sig4, 2, pan_sig2, pitch*4, 24, overtone_vol*0.3);
+			// FIXED: Using explicit keyword arguments to ensure correct mapping
+			sig = GrainBuf.ar(numChannels: 2, trigger: grain_trig, dur: size, sndbuf: buf, rate: pitch, pos: pos_sig + jitter_sig, interp: 2, pan: pan_sig, maxGrains: 96, mul: main_vol) +
+				  GrainBuf.ar(numChannels: 2, trigger: grain_trig, dur: size, sndbuf: buf2, rate: pitch, pos: pos_sig + jitter_sig, interp: 2, pan: pan_sig2, maxGrains: 96, mul: main_vol) +
+				  
+				  GrainBuf.ar(numChannels: 2, trigger: grain_trig, dur: size, sndbuf: buf, rate: pitch/2, pos: pos_sig + jitter_sig2, interp: 2, pan: pan_sig, maxGrains: 72, mul: subharmonic_vol) +
+				  GrainBuf.ar(numChannels: 2, trigger: grain_trig, dur: size, sndbuf: buf2, rate: pitch/2, pos: pos_sig + jitter_sig2, interp: 2, pan: pan_sig2, maxGrains: 72, mul: subharmonic_vol) +
+				  
+				  GrainBuf.ar(numChannels: 2, trigger: grain_trig, dur: size, sndbuf: buf, rate: pitch*2, pos: pos_sig + jitter_sig3, interp: 2, pan: pan_sig, maxGrains: 32, mul: overtone_vol*0.7) +
+				  GrainBuf.ar(numChannels: 2, trigger: grain_trig, dur: size, sndbuf: buf2, rate: pitch*2, pos: pos_sig + jitter_sig3, interp: 2, pan: pan_sig2, maxGrains: 32, mul: overtone_vol*0.7) +
+				  
+				  GrainBuf.ar(numChannels: 2, trigger: grain_trig, dur: size, sndbuf: buf, rate: pitch*4, pos: pos_sig + jitter_sig4, interp: 2, pan: pan_sig, maxGrains: 24, mul: overtone_vol*0.3) +
+				  GrainBuf.ar(numChannels: 2, trigger: grain_trig, dur: size, sndbuf: buf2, rate: pitch*4, pos: pos_sig + jitter_sig4, interp: 2, pan: pan_sig2, maxGrains: 24, mul: overtone_vol*0.3);
 
 			sig = BLowPass4.ar(sig, cutoff, q);
 			sig = Compander.ar(sig,sig,0.25)/2;
