@@ -1,4 +1,4 @@
--- granchild v3.0.2
+-- granchild v3.0.3
 -- granular sequencer
 --
 -- llllllll.co/t/granchild
@@ -9,7 +9,6 @@
 
 engine.name="ZGlut"
 
--- Updated reference to new core file
 local granchild=include("granchild/lib/granchild_core")
 
 local position={1,1}
@@ -25,7 +24,6 @@ local lfo_shapes = {"Sine", "Tri", "Saw", "Square", "S&H", "Slew"}
 local function bang(scene)
   for i=1,4 do
     for _,param_name in ipairs(param_list) do
-      -- Check if param exists (some lfo params might not be in this list directly or handled differently)
       if params:lookup_param(i..param_name..scene) then
         local p=params:lookup_param(i..param_name..scene)
         p:bang()
@@ -45,11 +43,10 @@ local function setup_params()
   local num_voices=4
   local old_volume={0.25,0.25,0.25,0.25}
   for i=1,num_voices do
-    params:add_group("sample "..i,72) -- Increased group size for new LFO params
+    params:add_group("sample "..i,72)
     params:add_option(i.."scene","scene",{"a","b"},1)
     params:set_action(i.."scene",function(scene)
       for _,param_name in ipairs(param_list) do
-        -- Hide/Show logic for extended params (lfo depth/shape) handled in naming convention
         if params:lookup_param(i..param_name..(3-scene)) then
             params:hide(i..param_name..(3-scene))
         end
@@ -59,7 +56,6 @@ local function setup_params()
             p:bang()
         end
       end
-      -- Also hide/show the new specific LFO params that might not be in param_list
       local lfo_targets = {"density", "size", "speed", "volume", "jitter", "spread", "subharmonics", "overtones"}
       for _, target in ipairs(lfo_targets) do
          params:hide(i..target.."depth"..(3-scene))
@@ -85,7 +81,6 @@ local function setup_params()
           engine.read(i,file)
           params:set(i.."play"..scene,2)
           if params:get(i.."sample"..(3-scene))=="-" then
-            -- load for other scene by default
             params:set(i.."sample"..(3-scene),file,true)
             params:set(i.."play"..(3-scene),2,true)
           end
@@ -101,7 +96,6 @@ local function setup_params()
       params:add_control(i.."volume"..scene,"volume",controlspec.new(0,4.0,"lin",0.05,0.25,"vol",0.05/4))
       params:set_action(i.."volume"..scene,function(value)
         engine.volume(i,value)
-        -- turn off the delay if volume is zero
         if value==0 then
           engine.send(i,0)
         elseif value>0 and old_volume[i]==0 then
@@ -122,7 +116,6 @@ local function setup_params()
       params:add_control(i.."densitydepth"..scene,"density depth",controlspec.new(0,1,"lin",0.01,0.5))
       params:add_option(i.."densityshape"..scene,"density shape",lfo_shapes,1)
       
-      -- New Parameter: Chaos/Distribution
       params:add_control(i.."distribution"..scene, "chaos", controlspec.new(0, 1, "lin", 0.01, 0, "", 0.01))
       params:set_action(i.."distribution"..scene, function(value) engine.distribution(i, value) end)
 
@@ -141,7 +134,6 @@ local function setup_params()
       params:add_control(i.."send"..scene,"delay send",controlspec.new(0.0,1.0,"lin",0.01,0.2))
       params:set_action(i.."send"..scene,function(value) engine.send(i,value) end)
 
-      -- FIX: Speed resolution increased to 0.01 for better control with accelerated grid
       params:add_control(i.."speed"..scene,"speed",controlspec.new(-2.0,2.0,"lin",0.01,0,"",0.01/4))
       params:set_action(i.."speed"..scene,function(value) engine.speed(i,value) end)
       params:add_option(i.."speedlfo"..scene,"speed lfo",{"off","on"},1)
@@ -214,40 +206,29 @@ local function setup_params()
     end
   end)
   for scene=1,2 do
-    -- effect controls
-    -- delay time
     params:add_control("delay_time"..scene,"*".."delay time",controlspec.new(0.0,60.0,"lin",.01,2.00,""))
     params:set_action("delay_time"..scene,function(value) engine.delay_time(value) end)
-    -- delay size
     params:add_control("delay_size"..scene,"*".."delay size",controlspec.new(0.5,5.0,"lin",0.01,2.00,""))
     params:set_action("delay_size"..scene,function(value) engine.delay_size(value) end)
-    -- dampening
     params:add_control("delay_damp"..scene,"*".."delay damp",controlspec.new(0.0,1.0,"lin",0.01,0.10,""))
     params:set_action("delay_damp"..scene,function(value) engine.delay_damp(value) end)
-    -- diffusion
     params:add_control("delay_diff"..scene,"*".."delay diff",controlspec.new(0.0,1.0,"lin",0.01,0.707,""))
     params:set_action("delay_diff"..scene,function(value) engine.delay_diff(value) end)
-    -- feedback
     params:add_control("delay_fdbk"..scene,"*".."delay fdbk",controlspec.new(0.00,1.0,"lin",0.01,0.20,""))
     params:set_action("delay_fdbk"..scene,function(value) engine.delay_fdbk(value) end)
-    -- mod depth
     params:add_control("delay_mod_depth"..scene,"*".."delay mod depth",controlspec.new(0.0,1.0,"lin",0.01,0.00,""))
     params:set_action("delay_mod_depth"..scene,function(value) engine.delay_mod_depth(value) end)
-    -- mod rate
     params:add_control("delay_mod_freq"..scene,"*".."delay mod freq",controlspec.new(0.0,10.0,"lin",0.01,0.10,"hz"))
     params:set_action("delay_mod_freq"..scene,function(value) engine.delay_mod_freq(value) end)
-    -- delay output volume
     params:add_control("delay_volume"..scene,"*".."delay output volume",controlspec.new(0.0,1.0,"lin",0,1.0,""))
     params:set_action("delay_volume"..scene,function(value) engine.delay_volume(value) end)
   end
   params:add_control("rec_fade","rec fade time",controlspec.new(0.0,1500,"lin",10,100,"ms",10/1500))
 
-  -- hide scene 2 initially
   for i=1,4 do
     for _,param_name in ipairs(param_list) do
       params:hide(i..param_name.."2")
     end
-    -- Also hide the new LFO params for scene 2
     local lfo_targets = {"density", "size", "speed", "volume", "jitter", "spread", "subharmonics", "overtones"}
     for _, target in ipairs(lfo_targets) do
          params:hide(i..target.."depth2")
@@ -262,14 +243,10 @@ local function setup_params()
 end
 
 function init()
+  math.randomseed(os.time()) -- FIX: Random seed for LFOs
   setup_params()
 
-  -- PSET LOAD HOOK: Ensure engine is synced when loading a preset
   params.action_loaded = function()
-    local current_scene = 1 -- Default to A
-    -- Try to find which scene is active for voice 1 as a proxy, or loop all
-    -- But since bang(scene) bangs everything for that scene, we need to know.
-    -- Actually, simpler to just bang whatever the params say is active.
     for i=1,4 do
         local s = params:get(i.."scene")
         bang(s)
@@ -278,25 +255,10 @@ function init()
   end
 
   granchild_grid=granchild:new({grid_on=true,toggleable=false})
-  -- local kolor = include("kolor/lib/kolor")
-  -- kolor_grid = kolor:new({grid_on=false,toggleable=true})
-  -- kolor_grid:toggle_grid(false)
-  -- granchild_grid:toggle_grid(true)
-  -- kolor_grid:set_toggle_callback(function()
-  --   granchild_grid:toggle_grid()
-  -- end)
-  -- granchild_grid:set_toggle_callback(function()
-  --   kolor_grid:toggle_grid()
-  -- end)
-
-  -- setup grid
-  -- kolor_grid.lattice.hard_sync()
-  -- granchild_grid.lattice.hard_sync()
 
   clock.run(function()
     while true do
-      clock.sleep(1/10) -- refresh
-      -- toggle norns screen between the granchild and kolor
+      clock.sleep(1/10)
       if granchild_grid.grid_on then
         norns_screen=granchild_grid.visual
       elseif kolor_grid~=nil and kolor_grid.grid_on then
@@ -304,29 +266,20 @@ function init()
       end
       redraw()
     end
-  end) -- start the grid redraw clock
+  end)
+end
 
-  -- params:set("1sample1",_path.audio.."splices/lr.wav")
-  -- params:set("1sample1","/home/we/dust/audio/kolor/bank12/loop_break_bpm175.wav")
-  -- params:set("1cutoff1",3000)
-  -- params:set("1cutoff2",3000)
+function cleanup()
+  if granchild_grid then granchild_grid:cleanup() end
 end
 
 function enc(k,d)
   if k==2 then
     position[1]=position[1]+d
-    if position[1]>8 then
-      position[1]=8
-    elseif position[1]<1 then
-      position[1]=1
-    end
+    if position[1]>8 then position[1]=8 elseif position[1]<1 then position[1]=1 end
   elseif k==3 then
     position[2]=position[2]+d
-    if position[2]>16 then
-      position[2]=16
-    elseif position[2]<1 then
-      position[2]=1
-    end
+    if position[2]>16 then position[2]=16 elseif position[2]<1 then position[2]=1 end
   end
 end
 
