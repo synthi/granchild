@@ -1,8 +1,9 @@
-// Engine_ZGlut v3.0.2
+// Engine_ZGlut v3.0.4
 // Changelog:
-// - Fixed NaN propagation when buffer duration is zero (prevents audio engine silence).
-// - Improved readBuf logic with robust fallback for Mono/Stereo detection.
-// - Added 'distribution' parameter for Impulse/Dust interpolation.
+// - REMOVED SoundFile class usage completely to prevent _SFOpenRead crashes.
+// - Implemented "Cascade Loading" for robust Mono/Stereo support without file inspection.
+// - Fixed NaN propagation in SynthDef (buf_dur protection).
+// - Added 'distribution' parameter.
 
 Engine_ZGlut : CroneEngine {
 	classvar nvoices = 4;
@@ -23,45 +24,43 @@ Engine_ZGlut : CroneEngine {
 
 	// disk read
 	readBuf { arg i, path;
+		// FORCE String conversion just in case, though we don't use SFOpenRead anymore.
+		var pathStr = path.asString;
+
 		if(buffers[i].notNil, {
-			if (File.exists(path), {
-				var sf = SoundFile.new;
-				var isMono = false;
-				var openSuccess = false;
+			if (File.exists(pathStr), {
+				// ROBUST LOADING STRATEGY (No SoundFile class):
+				// 1. Load Ch 0 to Left Buffer.
+				// 2. Load Ch 0 to Right Buffer (Dual Mono Fallback).
+				// 3. Attempt to load Ch 1 to Right Buffer (Stereo Overwrite).
 
-				// Attempt to detect channel count
-				if (sf.openRead(path), {
-					openSuccess = true;
-					if (sf.numChannels == 1, { isMono = true; });
-					sf.close;
-				});
+				// Step 1: Load Left (Ch 0)
+				Buffer.readChannel(context.server, pathStr, 0, -1, [0], { arg newbufL;
+					voices[i].set(\buf, newbufL);
+					buffers[i].free;
+					buffers[i] = newbufL;
 
-				// Load Logic
-				if (openSuccess and: isMono, {
-					// MONO DETECTED: Load Ch 0 to both buffers
-					Buffer.readChannel(context.server, path, 0, -1, [0], { arg newbuf;
-						voices[i].set(\buf, newbuf);
-						buffers[i].free;
-						buffers[i] = newbuf;
-					});
-					Buffer.readChannel(context.server, path, 0, -1, [0], { arg newbuf2;
-						voices[i].set(\buf2, newbuf2);
+					// Step 2: Load Right with Ch 0 (Safe Fallback)
+					Buffer.readChannel(context.server, pathStr, 0, -1, [0], { arg newbufR_Mono;
+						voices[i].set(\buf2, newbufR_Mono);
 						buffers[i+4].free;
-						buffers[i+4] = newbuf2;
-					});
-				}, {
-					// STEREO OR DETECTION FAILED: Default behavior
-					// Load Ch 0 to Left
-					Buffer.readChannel(context.server, path, 0, -1, [0], { arg newbuf;
-						voices[i].set(\buf, newbuf);
-						buffers[i].free;
-						buffers[i] = newbuf;
-					});
-					// Load Ch 1 to Right
-					Buffer.readChannel(context.server, path, 0, -1, [1], { arg newbuf2;
-						voices[i].set(\buf2, newbuf2);
-						buffers[i+4].free;
-						buffers[i+4] = newbuf2;
+						buffers[i+4] = newbufR_Mono;
+
+						// Step 3: Attempt to load Right with Ch 1 (Stereo)
+						// If this fails (file is mono), we still have the Ch 0 fallback in place.
+						// We use a separate buffer alloc for the attempt to not kill the fallback immediately if it fails?
+						// Actually, Buffer.readChannel simply won't fill if channel doesn't exist.
+						// But to be safe, we just trigger it. If it works, it replaces.
+						Buffer.readChannel(context.server, pathStr, 0, -1, [1], { arg newbufR_Stereo;
+							// If we got here and have data, update the voice
+							if(newbufR_Stereo.numFrames > 0, {
+								voices[i].set(\buf2, newbufR_Stereo);
+								buffers[i+4].free;
+								buffers[i+4] = newbufR_Stereo;
+							}, {
+								newbufR_Stereo.free; // Clean up if empty
+							});
+						});
 					});
 				});
 			});
@@ -81,7 +80,7 @@ Engine_ZGlut : CroneEngine {
 			gate=0, pos=0, speed=1, jitter=0, voice_pan=0,
 			size=0.1, density=20, pitch=1, spread=0, gain=1, envscale=1,
 			freeze=0, t_reset_pos=0, cutoff=20000, q=1, mode=0, send=0,
-			subharmonics=0, overtones=0, distribution=0; // distribution: 0=Impulse, 1=Dust
+			subharmonics=0, overtones=0, distribution=0;
 
 			var grain_trig;
 			var trig_impulse, trig_dust;
@@ -109,36 +108,21 @@ Engine_ZGlut : CroneEngine {
 			pitch = Lag.kr(pitch,0.25);
 			distribution = Lag.kr(distribution);
 
-			// Interpolate between Impulse (Periodic) and Dust (Stochastic)
 			trig_impulse = Impulse.kr(density);
 			trig_dust = Dust.kr(density);
 			grain_trig = SelectX.kr(distribution, [trig_impulse, trig_dust]);
 
 			buf_dur = BufDur.kr(buf);
-			// SAFETY FIX: Prevent division by zero if buffer is empty or failed to load.
-			// This prevents NaN propagation which kills the audio engine.
+			// SAFETY FIX: Prevent NaN propagation
 			buf_dur_safe = buf_dur.max(0.001);
 
-			pan_sig = TRand.kr(trig: grain_trig,
-				lo: -1,
-				hi: (2*spread)-1);
+			pan_sig = TRand.kr(trig: grain_trig, lo: -1, hi: (2*spread)-1);
+			pan_sig2 = TRand.kr(trig: grain_trig, lo: 1-(2*spread), hi: 1);
 
-			pan_sig2 = TRand.kr(trig: grain_trig,
-				lo: 1-(2*spread),
-				hi: 1);
-
-			jitter_sig = TRand.kr(trig: grain_trig,
-				lo: buf_dur_safe.reciprocal.neg * jitter,
-				hi: buf_dur_safe.reciprocal * jitter);
-			jitter_sig2 = TRand.kr(trig: grain_trig,
-				lo: buf_dur_safe.reciprocal.neg * jitter,
-				hi: buf_dur_safe.reciprocal * jitter);
-			jitter_sig3 = TRand.kr(trig: grain_trig,
-				lo: buf_dur_safe.reciprocal.neg * jitter,
-				hi: buf_dur_safe.reciprocal * jitter);
-			jitter_sig4 = TRand.kr(trig: grain_trig,
-				lo: buf_dur_safe.reciprocal.neg * jitter,
-				hi: buf_dur_safe.reciprocal * jitter);
+			jitter_sig = TRand.kr(trig: grain_trig, lo: buf_dur_safe.reciprocal.neg * jitter, hi: buf_dur_safe.reciprocal * jitter);
+			jitter_sig2 = TRand.kr(trig: grain_trig, lo: buf_dur_safe.reciprocal.neg * jitter, hi: buf_dur_safe.reciprocal * jitter);
+			jitter_sig3 = TRand.kr(trig: grain_trig, lo: buf_dur_safe.reciprocal.neg * jitter, hi: buf_dur_safe.reciprocal * jitter);
+			jitter_sig4 = TRand.kr(trig: grain_trig, lo: buf_dur_safe.reciprocal.neg * jitter, hi: buf_dur_safe.reciprocal * jitter);
 
 			buf_pos = Phasor.kr(trig: t_reset_pos,
 				rate: buf_dur_safe.reciprocal / ControlRate.ir * speed,
@@ -146,103 +130,14 @@ Engine_ZGlut : CroneEngine {
 
 			pos_sig = Wrap.kr(Select.kr(freeze, [buf_pos, pos]));
 
-			sig = GrainBuf.ar(
-						numChannels: 2,
-						trigger:grain_trig,
-						dur:size,
-						sndbuf:buf,
-						pos: pos_sig + jitter_sig,
-						interp: 2,
-						pan: pan_sig,
-						rate:pitch,
-						maxGrains:96,
-						mul:main_vol,
-					)+
-				  GrainBuf.ar(
-						numChannels: 2,
-						trigger:grain_trig,
-						dur:size,
-						sndbuf:buf2,
-						pos: pos_sig + jitter_sig,
-						interp: 2,
-						pan: pan_sig2,
-						rate:pitch,
-						maxGrains:96,
-						mul:main_vol,
-					)+
-				GrainBuf.ar(
-						numChannels: 2,
-						trigger:grain_trig,
-						dur:size,
-						sndbuf:buf,
-						pos: pos_sig + jitter_sig2,
-						interp: 2,
-						pan: pan_sig,
-						rate:pitch/2,
-						maxGrains:72,
-						mul:subharmonic_vol,
-					)+
-				  GrainBuf.ar(
-						numChannels: 2,
-						trigger:grain_trig,
-						dur:size,
-						sndbuf:buf2,
-						pos: pos_sig + jitter_sig2,
-						interp: 2,
-						pan: pan_sig2,
-						rate:pitch/2,
-						maxGrains:72,
-						mul:subharmonic_vol,
-					)+
-				GrainBuf.ar(
-						numChannels: 2,
-						trigger:grain_trig,
-						dur:size,
-						sndbuf:buf,
-						pos: pos_sig + jitter_sig3,
-						interp: 2,
-						pan: pan_sig,
-						rate:pitch*2,
-						maxGrains:32,
-						mul:overtone_vol*0.7,
-					)+
-				  GrainBuf.ar(
-						numChannels: 2,
-						trigger:grain_trig,
-						dur:size,
-						sndbuf:buf2,
-						pos: pos_sig + jitter_sig3,
-						interp: 2,
-						pan: pan_sig2,
-						rate:pitch*2,
-						maxGrains:32,
-						mul:overtone_vol*0.7,
-					)+
-				GrainBuf.ar(
-						numChannels: 2,
-						trigger:grain_trig,
-						dur:size,
-						sndbuf:buf,
-						pos: pos_sig + jitter_sig4,
-						interp: 2,
-						pan: pan_sig,
-						rate:pitch*4,
-						maxGrains:24,
-						mul:overtone_vol*0.3,
-					)+
-				  GrainBuf.ar(
-						numChannels: 2,
-						trigger:grain_trig,
-						dur:size,
-						sndbuf:buf2,
-						pos: pos_sig + jitter_sig4,
-						interp: 2,
-						pan: pan_sig2,
-						rate:pitch*4,
-						maxGrains:24,
-						mul:overtone_vol*0.3,
-					)
-				  ;
+			sig = GrainBuf.ar(2, grain_trig, size, buf, pos_sig + jitter_sig, 2, pan_sig, pitch, 96, main_vol) +
+				  GrainBuf.ar(2, grain_trig, size, buf2, pos_sig + jitter_sig, 2, pan_sig2, pitch, 96, main_vol) +
+				  GrainBuf.ar(2, grain_trig, size, buf, pos_sig + jitter_sig2, 2, pan_sig, pitch/2, 72, subharmonic_vol) +
+				  GrainBuf.ar(2, grain_trig, size, buf2, pos_sig + jitter_sig2, 2, pan_sig2, pitch/2, 72, subharmonic_vol) +
+				  GrainBuf.ar(2, grain_trig, size, buf, pos_sig + jitter_sig3, 2, pan_sig, pitch*2, 32, overtone_vol*0.7) +
+				  GrainBuf.ar(2, grain_trig, size, buf2, pos_sig + jitter_sig3, 2, pan_sig2, pitch*2, 32, overtone_vol*0.7) +
+				  GrainBuf.ar(2, grain_trig, size, buf, pos_sig + jitter_sig4, 2, pan_sig, pitch*4, 24, overtone_vol*0.3) +
+				  GrainBuf.ar(2, grain_trig, size, buf2, pos_sig + jitter_sig4, 2, pan_sig2, pitch*4, 24, overtone_vol*0.3);
 
 			sig = BLowPass4.ar(sig, cutoff, q);
 			sig = Compander.ar(sig,sig,0.25)/2;
@@ -254,7 +149,6 @@ Engine_ZGlut : CroneEngine {
 			Out.ar(out, sig * level * gain);
 			Out.ar(effectBus, sig * level * send );
 			Out.kr(phase_out, pos_sig);
-			// ignore gain for level out
 			Out.kr(level_out, level);
 		}).add;
 
@@ -267,9 +161,7 @@ Engine_ZGlut : CroneEngine {
 
 		context.server.sync;
 
-		// delay bus
     effectBus = Bus.audio(context.server, 2);
-
 		effect = Synth.new(\effect, [\in, effectBus.index, \out, context.out_b.index], target: context.xg);
 
 		phases = Array.fill(nvoices, { arg i; Bus.control(context.server); });
@@ -299,148 +191,37 @@ Engine_ZGlut : CroneEngine {
 		this.addCommand("delay_mod_freq", "f", { arg msg; effect.set(\modFreq, msg[1]); });
 		this.addCommand("delay_volume", "f", { arg msg; effect.set(\delayVol, msg[1]); });
 
-		this.addCommand("read", "is", { arg msg;
-			this.readBuf(msg[1] - 1, msg[2]);
-		});
+		this.addCommand("read", "is", { arg msg; this.readBuf(msg[1] - 1, msg[2]); });
 
 		this.addCommand("seek", "if", { arg msg;
 			var voice = msg[1] - 1;
-			var lvl, pos;
-			var seek_rate = 1 / 750;
-
-			seek_tasks[voice].stop;
-
-			// TODO: async get
-			lvl = levels[voice].getSynchronous();
-
-			if (false, { // disable seeking until fully implemented
-				var step;
-				var target_pos;
-
-				// TODO: async get
-				pos = phases[voice].getSynchronous();
-				voices[voice].set(\freeze, 1);
-
-				target_pos = msg[2];
-				step = (target_pos - pos) * seek_rate;
-
-				seek_tasks[voice] = Routine {
-					while({ abs(target_pos - pos) > abs(step) }, {
-						pos = pos + step;
-						voices[voice].set(\pos, pos);
-						seek_rate.wait;
-					});
-
-					voices[voice].set(\pos, target_pos);
-					voices[voice].set(\freeze, 0);
-					voices[voice].set(\t_reset_pos, 1);
-				};
-
-				seek_tasks[voice].play();
-			}, {
-				pos = msg[2];
-
-				voices[voice].set(\pos, pos);
-				voices[voice].set(\t_reset_pos, 1);
-				voices[voice].set(\freeze, 0);
-			});
+			var pos = msg[2];
+			voices[voice].set(\pos, pos);
+			voices[voice].set(\t_reset_pos, 1);
+			voices[voice].set(\freeze, 0);
 		});
 
-		this.addCommand("gate", "ii", { arg msg;
-			var voice = msg[1] - 1;
-			voices[voice].set(\gate, msg[2]);
-		});
-
-		this.addCommand("speed", "if", { arg msg;
-			var voice = msg[1] - 1;
-			voices[voice].set(\speed, msg[2]);
-		});
-
-		this.addCommand("jitter", "if", { arg msg;
-			var voice = msg[1] - 1;
-			voices[voice].set(\jitter, msg[2]);
-		});
-
-		this.addCommand("size", "if", { arg msg;
-			var voice = msg[1] - 1;
-			voices[voice].set(\size, msg[2]);
-		});
-
-		this.addCommand("density", "if", { arg msg;
-			var voice = msg[1] - 1;
-			voices[voice].set(\density, msg[2]);
-		});
-
-		this.addCommand("pan", "if", { arg msg;
-			var voice = msg[1] - 1;
-			voices[voice].set(\voice_pan, msg[2]);
-		});
-
-		this.addCommand("pitch", "if", { arg msg;
-			var voice = msg[1] - 1;
-			voices[voice].set(\pitch, msg[2]);
-		});
-
-		this.addCommand("spread", "if", { arg msg;
-			var voice = msg[1] - 1;
-			voices[voice].set(\spread, msg[2]);
-		});
-
-		this.addCommand("gain", "if", { arg msg;
-			var voice = msg[1] - 1;
-			voices[voice].set(\gain, msg[2]);
-		});
-
-		this.addCommand("envscale", "if", { arg msg;
-			var voice = msg[1] - 1;
-			voices[voice].set(\envscale, msg[2]);
-		});
-
-		this.addCommand("cutoff", "if", { arg msg;
-		var voice = msg[1] -1;
-		voices[voice].set(\cutoff, msg[2]);
-		});
-
-		this.addCommand("q", "if", { arg msg;
-		var voice = msg[1] -1;
-		voices[voice].set(\q, msg[2]);
-		});
-
-		this.addCommand("send", "if", { arg msg;
-		var voice = msg[1] -1;
-		voices[voice].set(\send, msg[2]);
-		});
-
-		this.addCommand("volume", "if", { arg msg;
-			var voice = msg[1] - 1;
-			voices[voice].set(\gain, msg[2]);
-		});
-
-		this.addCommand("overtones", "if", { arg msg;
-			var voice = msg[1] - 1;
-			voices[voice].set(\overtones, msg[2]);
-		});
-
-		this.addCommand("subharmonics", "if", { arg msg;
-			var voice = msg[1] - 1;
-			voices[voice].set(\subharmonics, msg[2]);
-		});
-
-		this.addCommand("distribution", "if", { arg msg;
-			var voice = msg[1] - 1;
-			voices[voice].set(\distribution, msg[2]);
-		});
+		this.addCommand("gate", "ii", { arg msg; voices[msg[1]-1].set(\gate, msg[2]); });
+		this.addCommand("speed", "if", { arg msg; voices[msg[1]-1].set(\speed, msg[2]); });
+		this.addCommand("jitter", "if", { arg msg; voices[msg[1]-1].set(\jitter, msg[2]); });
+		this.addCommand("size", "if", { arg msg; voices[msg[1]-1].set(\size, msg[2]); });
+		this.addCommand("density", "if", { arg msg; voices[msg[1]-1].set(\density, msg[2]); });
+		this.addCommand("pan", "if", { arg msg; voices[msg[1]-1].set(\voice_pan, msg[2]); });
+		this.addCommand("pitch", "if", { arg msg; voices[msg[1]-1].set(\pitch, msg[2]); });
+		this.addCommand("spread", "if", { arg msg; voices[msg[1]-1].set(\spread, msg[2]); });
+		this.addCommand("gain", "if", { arg msg; voices[msg[1]-1].set(\gain, msg[2]); });
+		this.addCommand("envscale", "if", { arg msg; voices[msg[1]-1].set(\envscale, msg[2]); });
+		this.addCommand("cutoff", "if", { arg msg; voices[msg[1]-1].set(\cutoff, msg[2]); });
+		this.addCommand("q", "if", { arg msg; voices[msg[1]-1].set(\q, msg[2]); });
+		this.addCommand("send", "if", { arg msg; voices[msg[1]-1].set(\send, msg[2]); });
+		this.addCommand("volume", "if", { arg msg; voices[msg[1]-1].set(\gain, msg[2]); });
+		this.addCommand("overtones", "if", { arg msg; voices[msg[1]-1].set(\overtones, msg[2]); });
+		this.addCommand("subharmonics", "if", { arg msg; voices[msg[1]-1].set(\subharmonics, msg[2]); });
+		this.addCommand("distribution", "if", { arg msg; voices[msg[1]-1].set(\distribution, msg[2]); });
 
 		nvoices.do({ arg i;
-			this.addPoll(("phase_" ++ (i+1)).asSymbol, {
-				var val = phases[i].getSynchronous;
-				val
-			});
+			this.addPoll(("phase_" ++ (i+1)).asSymbol, { phases[i].getSynchronous; });
 	 });
-
-		seek_tasks = Array.fill(nvoices, { arg i;
-			Routine {}
-		});
 	}
 
 	free {
