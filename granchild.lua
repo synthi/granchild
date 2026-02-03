@@ -1,4 +1,4 @@
--- granchild v3.0.3
+-- granchild v3.0.4
 -- granular sequencer
 --
 -- llllllll.co/t/granchild
@@ -20,6 +20,10 @@ local param_list={"overtones","overtoneslfo","subharmonics","subharmonicslfo","s
 local param_list_delay={"delay_volume","delay_mod_freq","delay_mod_depth","delay_fdbk","delay_diff","delay_damp","delay_size","delay_time"}
 
 local lfo_shapes = {"Sine", "Tri", "Saw", "Square", "S&H", "Slew"}
+
+-- Debounce timers for sample loading
+local sample_timers = {}
+for i=1,4 do sample_timers[i] = {} end
 
 local function bang(scene)
   for i=1,4 do
@@ -78,12 +82,17 @@ local function setup_params()
       params:set_action(i.."sample"..scene,function(file)
         print("sample "..file)
         if file~="-" then
-          engine.read(i,file)
-          params:set(i.."play"..scene,2)
-          if params:get(i.."sample"..(3-scene))=="-" then
-            params:set(i.."sample"..(3-scene),file,true)
-            params:set(i.."play"..(3-scene),2,true)
-          end
+          -- DEBOUNCE LOGIC: Wait 0.2s before loading to prevent freezing during scroll
+          if sample_timers[i][scene] then clock.cancel(sample_timers[i][scene]) end
+          sample_timers[i][scene] = clock.run(function()
+              clock.sleep(0.2)
+              engine.read(i,file)
+              params:set(i.."play"..scene,2)
+              if params:get(i.."sample"..(3-scene))=="-" then
+                params:set(i.."sample"..(3-scene),file,true)
+                params:set(i.."play"..(3-scene),2,true)
+              end
+          end)
         end
       end)
 
@@ -148,7 +157,7 @@ local function setup_params()
       end)
 
       params:add_control(i.."pos"..scene,"pos",controlspec.new(-1/40,1/40,"lin",0.001,0))
-      params:set_action(i.."pos"..scene,function(value) engine.seek(i,util.clamp(value+params:get(i.."seek"..scene),0,1)) end)
+      params:set_action(i.."pos"..scene,function(value) engine.seek(i,util.clamp(value+params:get(i.."pos"..scene),0,1)) end)
 
       params:add_control(i.."size"..scene,"size",controlspec.new(1,15,"lin",1,5,"",1/15))
       params:set_action(i.."size"..scene,function(value)
@@ -243,7 +252,7 @@ local function setup_params()
 end
 
 function init()
-  math.randomseed(os.time()) -- FIX: Random seed for LFOs
+  math.randomseed(os.time())
   setup_params()
 
   params.action_loaded = function()
