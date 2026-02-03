@@ -1,4 +1,4 @@
--- Changelog: v3.0.3 - Fixed Softcut Race Condition (Event Render), Added Cleanup, Fixed LFO Dependency Order
+--Changelog: v3.0.4 - Added Dynamic Grid Acceleration (0.01/0.05/0.1). Added Software Debounce (30ms). Added Cleanup & Softcut Render.
 
 local json=include("granchild/lib/json")
 local lattice=require("lattice")
@@ -44,6 +44,10 @@ function Granchild:new(args)
   end
 
   m.pressed_buttons={}
+  -- DEBOUNCE: Store last press time per button
+  m.last_press_time={}
+  for r=1,8 do m.last_press_time[r]={} end
+
   m.num_voices=4
   m.tape_voice=0
   m.tape_start=0
@@ -131,8 +135,13 @@ function Granchild:new(args)
       for row=1,8 do
         if m.pressed_buttons[row..","..col]~=nil then
           local elapsed_time=cur_time-m.pressed_buttons[row..","..col]
-          if elapsed_time>0.04 then
-            m:key_press(row,col,true)
+          -- DYNAMIC ACCELERATION LOGIC
+          if elapsed_time > 0.04 then
+             local is_accelerated = false
+             -- Only trigger if enough time passed for next step
+             -- But since metro is 0.04, we just check thresholds to decide increment
+             -- We pass 'true' to key_press to indicate it's a hold repeat
+             m:key_press(row,col,true, elapsed_time)
           end
         end
       end
@@ -146,7 +155,6 @@ function Granchild:new(args)
     phase_poll:start()
   end
 
-  -- FIX: Softcut Event Render for robust recording
   softcut.event_render(function(ch, start, i, s)
       if m.tape_voice > 0 then
           m:finish_tape_load(m.tape_voice)
@@ -216,16 +224,27 @@ function Granchild:set_toggle_callback(fn)
 end
 
 function Granchild:grid_key(x,y,z)
+  -- DEBOUNCE CHECK
+  local now = util.time()
+  if self.last_press_time[y][x] and (now - self.last_press_time[y][x] < 0.03) then
+      return -- Ignore bounce
+  end
+  self.last_press_time[y][x] = now
+
   self:key_press(y,x,z==1)
   self:grid_redraw()
 end
 
-function Granchild:key_press(row,col,on)
+function Granchild:key_press(row,col,on,elapsed_hold)
   if self.grid64 and not self.grid64default then
     col=col+8
   end
+  
   if on then
-    self.pressed_buttons[row..","..col]=self:current_time()
+    -- Only update press time if it's a fresh press (not a hold repeat)
+    if not elapsed_hold then
+        self.pressed_buttons[row..","..col]=self:current_time()
+    end
   else
     self.pressed_buttons[row..","..col]=nil
   end
@@ -237,13 +256,13 @@ function Granchild:key_press(row,col,on)
   elseif (col%4==0) and row==7 and on then
     self:change_scene(col)
   elseif col%4==1 and (row==1 or row==2) and on then
-    self:change_density_mod(row,col)
+    self:change_density_mod(row,col,elapsed_hold)
   elseif col%4==1 and (row==3 or row==4) and on then
-    self:change_size(row,col)
+    self:change_size(row,col,elapsed_hold)
   elseif col%4==1 and (row==5 or row==6) and on then
-    self:change_speed(row,col)
+    self:change_speed(row,col,elapsed_hold)
   elseif col%4==1 and (row==7 or row==8) and on then
-    self:change_volume(row,col)
+    self:change_volume(row,col,elapsed_hold)
   elseif col%4==3 and row==8 and on then
     self:toggle_recording(col)
   elseif col%4==0 and row==8 and on then
@@ -309,30 +328,42 @@ function Granchild:set_division(voice,division)
   self.voices[voice].division=division
 end
 
-function Granchild:change_density_mod(row,col)
+-- HELPER FOR DYNAMIC ACCELERATION
+function Granchild:get_dynamic_delta(elapsed)
+    if not elapsed then return 1 end -- Single press
+    if elapsed > 1.0 then return 10 end
+    if elapsed > 0.3 then return 5 end
+    return 1
+end
+
+function Granchild:change_density_mod(row,col,elapsed)
   local voice=math.floor((col-1)/4)+1
-  local diff=-1*((row-1)*2-1)
+  local mult = self:get_dynamic_delta(elapsed)
+  local diff=-1*((row-1)*2-1) * mult
   params:delta(voice.."density"..params:get(voice.."scene"),diff)
   print("change_density_mod "..voice.." "..diff.." "..params:get(voice.."density"..params:get(voice.."scene")))
 end
 
-function Granchild:change_size(row,col)
+function Granchild:change_size(row,col,elapsed)
   local voice=math.floor((col-1)/4)+1
-  local diff=-1*((row-3)*2-1)
+  local mult = self:get_dynamic_delta(elapsed)
+  local diff=-1*((row-3)*2-1) * mult
   params:delta(voice.."size"..params:get(voice.."scene"),diff)
   print("change_size "..voice.." "..diff.." "..params:get(voice.."size"..params:get(voice.."scene")))
 end
 
-function Granchild:change_speed(row,col)
+function Granchild:change_speed(row,col,elapsed)
   local voice=math.floor((col-1)/4)+1
-  local diff=-1*((row-5)*2-1)
+  local mult = self:get_dynamic_delta(elapsed)
+  local diff=-1*((row-5)*2-1) * mult
   params:delta(voice.."speed"..params:get(voice.."scene"),diff)
   print("change_speed "..voice.." "..diff.." "..params:get(voice.."speed"..params:get(voice.."scene")))
 end
 
-function Granchild:change_volume(row,col)
+function Granchild:change_volume(row,col,elapsed)
   local voice=math.floor((col-1)/4)+1
-  local diff=-1*((row-7)*2-1)
+  local mult = self:get_dynamic_delta(elapsed)
+  local diff=-1*((row-7)*2-1) * mult
   params:delta(voice.."volume"..params:get(voice.."scene"),diff)
   print("change_volume "..voice.." "..diff.." "..params:get(voice.."volume"..params:get(voice.."scene")))
 end
@@ -499,51 +530,15 @@ function Granchild:get_visual()
   return self.visual
 end
 
-function Granchild:pos_to_row_col(pos)
-  local row=math.floor((pos-1)/3)+1
-  local col=pos-(row-1)*3+1
-  return row,col
-end
-
-function Granchild:current_time()
-  return clock.get_beat_sec()*clock.get_beats()
-end
-
-function Granchild:grid_redraw()
-  self.g:all(0)
-  local gd=self:get_visual()
-  local s=1
-  local e=self.grid_width
-  local adj=0
-  if self.grid64 then
-    e=8
-    if not self.grid64default then
-      s=9
-      e=16
-      adj=-8
-    end
-  end
-  for row=1,8 do
-    for col=s,e do
-      if gd[row][col]~=0 then
-        self.g:led(col+adj,row,gd[row][col])
-      end
-    end
-  end
-  self.g:refresh()
-end
-
 function Granchild:update_lfos()
   for i=1,self.num_voices do
     local scene = params:get(i.."scene")
     if params:get(i.."play"..scene)==2 then
       
-      -- FIX: Calculate Density FIRST, as Size depends on it
       local density_val = params:get(i.."density"..scene)
       local density_lfo_active = params:get(i.."densitylfo"..scene) == 2
       if density_lfo_active then
-          -- Find density mod params manually since we need it before loop
-          local m = self.mod_vals[i][5] -- 5 is density index in mod_parameters
+          local m = self.mod_vals[i][5]
           local depth = params:get(i.."densitydepth"..scene)
           local shape = params:get(i.."densityshape"..scene)
           local lfo_val = self:calculate_lfo(m.period, m.offset, shape, i, 5)
@@ -557,7 +552,7 @@ function Granchild:update_lfos()
       end
 
       for j,m in ipairs(self.mod_vals[i]) do
-        if m.name ~= "density" then -- Skip density as we did it
+        if m.name ~= "density" then
             local lfo_active = params:get(i..m.name.."lfo"..scene) == 2
             local base_val = params:get(i..m.name..scene)
             local final_val = base_val
@@ -576,7 +571,6 @@ function Granchild:update_lfos()
                  engine.gain(i, final_val)
               elseif engine[m.name] then
                    if m.name == "size" then
-                       -- FIX: Use calculated density_val, not params:get
                        engine.size(i, util.clamp(final_val*clock.get_beat_sec()/10, 0.001, util.linlin(1,40,1,0.1, density_val)))
                    elseif m.name == "jitter" then
                        engine.jitter(i, final_val/1000)
@@ -698,12 +692,10 @@ function Granchild:rec_stop()
     
     local tape_name=self:tape_get_name()
     if tape_name~=nil then
-      -- FIX: Use buffer_write_stereo and wait for event_render callback
-      -- We store the target name in a temp variable to use in the callback
       self.pending_tape_name = tape_name
       softcut.buffer_write_stereo(tape_name,2,total_length)
     else
-      self.tape_voice=0 -- Reset if failed
+      self.tape_voice=0
     end
   end)
 end
