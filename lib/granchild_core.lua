@@ -1,8 +1,9 @@
--- granchild_core.lua v3.0.7
+-- granchild_core.lua v3.0.8
 -- Core logic class
 -- Changelog:
--- v3.0.7: CRITICAL FIX - Restored missing functions (current_time, grid_redraw, pos_to_row_col).
--- v3.0.6: Implemented Piecewise LFO Scaling. Fixed LFO Off stuck value. Grid Speed 20Hz.
+-- v3.0.8: LFOs now use external 'freq' parameters (Hz) converted to beats.
+-- v3.0.7: Restored missing utility functions.
+-- v3.0.6: Piecewise LFO Scaling, Grid Fixes, Tape Fixes.
 
 local json=include("granchild/lib/json")
 local lattice=require("lattice")
@@ -81,6 +82,7 @@ function Granchild:new(args)
   end
 
   -- setup lfos with MUSICAL vs ABSOLUTE ranges
+  -- Note: Period/LFO values here are now only used for initial randomization ranges in the main script
   local mod_parameters={
     {name="jitter",       musical={15,200},   absolute={0,500},   lfo={32,64}},
     {name="spread",       musical={0,100},    absolute={0,100},   lfo={16,24}},
@@ -102,7 +104,7 @@ function Granchild:new(args)
           name=mod.name,
           musical=mod.musical,
           absolute=mod.absolute,
-          period=math.random(mod.lfo[1],mod.lfo[2]),
+          -- Period is now controlled by params, but we keep structure
           offset=math.random()*30
       }
       m.mod_state[i][j]={
@@ -195,7 +197,7 @@ function Granchild:cleanup()
   end
 end
 
--- RESTORED UTILITY FUNCTIONS
+-- UTILITY FUNCTIONS (CRITICAL)
 function Granchild:pos_to_row_col(pos)
   local row=math.floor((pos-1)/3)+1
   local col=pos-(row-1)*3+1
@@ -229,7 +231,7 @@ function Granchild:grid_redraw()
   end
   self.g:refresh()
 end
--- END RESTORED FUNCTIONS
+-- END UTILITY FUNCTIONS
 
 function Granchild:emit_note(division)
   local update=false
@@ -386,11 +388,12 @@ function Granchild:set_division(voice,division)
 end
 
 -- HELPER FOR DYNAMIC ACCELERATION
+-- Base step is 0.05
 function Granchild:get_dynamic_delta(elapsed)
     if not elapsed then return 1 end -- Single press
-    if elapsed > 1.0 then return 2 end -- Fast
-    if elapsed > 0.3 then return 1 end -- Normal
-    return 0.2 -- Precision
+    if elapsed > 1.0 then return 2 end -- 0.10 increment
+    if elapsed > 0.3 then return 1 end -- 0.05 increment
+    return 1 -- Default
 end
 
 function Granchild:change_density_mod(row,col,elapsed)
@@ -592,13 +595,19 @@ function Granchild:update_lfos()
     local scene = params:get(i.."scene")
     if params:get(i.."play"..scene)==2 then
       
+      -- FIX: Calculate Density FIRST, as Size depends on it
       local density_val = params:get(i.."density"..scene)
       local density_lfo_active = params:get(i.."densitylfo"..scene) == 2
       if density_lfo_active then
           local m = self.mod_vals[i][5]
           local depth = params:get(i.."densitydepth"..scene)
           local shape = params:get(i.."densityshape"..scene)
-          local lfo_val = self:calculate_lfo(m.period, m.offset, shape, i, 5)
+          
+          -- NEW: Calculate period from Hz param
+          local freq = params:get(i.."densityfreq"..scene)
+          local bps = clock.get_beat_sec()
+          local period_in_beats = (1.0 / freq) / bps
+          local lfo_val = self:calculate_lfo(period_in_beats, m.offset, shape, i, 5)
           
           local musical_span = m.musical[2] - m.musical[1]
           local absolute_span = m.absolute[2] - m.absolute[1]
@@ -628,7 +637,12 @@ function Granchild:update_lfos()
             if lfo_active then
               local depth = params:get(i..m.name.."depth"..scene)
               local shape = params:get(i..m.name.."shape"..scene)
-              local lfo_val = self:calculate_lfo(m.period, m.offset, shape, i, j)
+              
+              -- NEW: Calculate period from Hz param
+              local freq = params:get(i..m.name.."freq"..scene)
+              local bps = clock.get_beat_sec()
+              local period_in_beats = (1.0 / freq) / bps
+              local lfo_val = self:calculate_lfo(period_in_beats, m.offset, shape, i, j)
               
               local musical_span = m.musical[2] - m.musical[1]
               local absolute_span = m.absolute[2] - m.absolute[1]
