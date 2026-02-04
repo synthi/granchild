@@ -1,9 +1,8 @@
--- granchild_core.lua v3.0.6
+-- granchild_core.lua v3.0.7
 -- Core logic class
 -- Changelog:
--- v3.0.6: Implemented Piecewise LFO Scaling (Musical vs Absolute ranges). Fixed LFO Off stuck value.
---         Grid Speed: 20Hz, Dynamic Multipliers (0.2, 1, 2). Software Debounce. Tape limit 9999.
--- v3.0.5: Fixed file truncation.
+-- v3.0.7: CRITICAL FIX - Restored missing functions (current_time, grid_redraw, pos_to_row_col).
+-- v3.0.6: Implemented Piecewise LFO Scaling. Fixed LFO Off stuck value. Grid Speed 20Hz.
 
 local json=include("granchild/lib/json")
 local lattice=require("lattice")
@@ -55,7 +54,7 @@ function Granchild:new(args)
   -- keep track of pressed buttons
   m.pressed_buttons={}
   
-  -- DEBOUNCE: Store last press time per button (Fix for Norns Shield/Old Grids)
+  -- DEBOUNCE: Store last press time per button
   m.last_press_time={}
   for r=1,8 do m.last_press_time[r]={} end
 
@@ -93,13 +92,12 @@ function Granchild:new(args)
     {name="overtones",    musical={0,0.2},    absolute={0,1},     lfo={36,60}},
   }
   m.mod_vals={}
-  m.mod_state={} -- State for S&H and Slew
+  m.mod_state={} 
 
   for i=1,m.num_voices do
     m.mod_vals[i]={}
     m.mod_state[i]={}
     for j,mod in ipairs(mod_parameters) do
-      -- We store the full definition to access ranges later
       m.mod_vals[i][j]={
           name=mod.name,
           musical=mod.musical,
@@ -126,8 +124,6 @@ function Granchild:new(args)
   end
 
   -- setup lattice
-  -- lattice
-  -- for keeping time of all the divisions
   m.lattice=lattice:new({
     ppqn=48
   })
@@ -147,7 +143,7 @@ function Granchild:new(args)
   m.grid_refresh=metro.init()
   m.grid_refresh.time=0.1
   m.grid_refresh.event=function()
-    m:update_lfos() -- use this metro to update lfos too
+    m:update_lfos() 
     if m.grid_on then
       m:grid_redraw()
     end
@@ -156,19 +152,15 @@ function Granchild:new(args)
 
   -- metro for checking if keys are held to toggle re-presses
   m.key_held=metro.init()
-  m.key_held.time=0.05 -- SPEED UP: 20Hz (0.05s) as requested
+  m.key_held.time=0.05 -- SPEED UP: 20Hz
   m.key_held.event=function()
-    -- only on column 1, 5, 9, 13
     local cols={1,5,9,13}
     local cur_time=m:current_time()
     for _,col in ipairs(cols) do
       for row=1,8 do
         if m.pressed_buttons[row..","..col]~=nil then
           local elapsed_time=cur_time-m.pressed_buttons[row..","..col]
-          -- DYNAMIC ACCELERATION LOGIC
           if elapsed_time > 0.05 then
-             -- We pass 'true' to key_press to indicate it's a hold repeat
-             -- We pass 'elapsed_time' to calculate dynamic speed
              m:key_press(row,col,true, elapsed_time)
           end
         end
@@ -184,7 +176,7 @@ function Granchild:new(args)
     phase_poll:start()
   end
 
-  -- FIX: Softcut Event Render for robust recording (replaces sleep)
+  -- Softcut Event Render
   softcut.event_render(function(ch, start, i, s)
       if m.tape_voice > 0 then
           m:finish_tape_load(m.tape_voice)
@@ -202,6 +194,42 @@ function Granchild:cleanup()
       poll.clear_all()
   end
 end
+
+-- RESTORED UTILITY FUNCTIONS
+function Granchild:pos_to_row_col(pos)
+  local row=math.floor((pos-1)/3)+1
+  local col=pos-(row-1)*3+1
+  return row,col
+end
+
+function Granchild:current_time()
+  return clock.get_beat_sec()*clock.get_beats()
+end
+
+function Granchild:grid_redraw()
+  self.g:all(0)
+  local gd=self:get_visual()
+  local s=1
+  local e=self.grid_width
+  local adj=0
+  if self.grid64 then
+    e=8
+    if not self.grid64default then
+      s=9
+      e=16
+      adj=-8
+    end
+  end
+  for row=1,8 do
+    for col=s,e do
+      if gd[row][col]~=0 then
+        self.g:led(col+adj,row,gd[row][col])
+      end
+    end
+  end
+  self.g:refresh()
+end
+-- END RESTORED FUNCTIONS
 
 function Granchild:emit_note(division)
   local update=false
@@ -271,7 +299,6 @@ function Granchild:key_press(row,col,on,elapsed_hold)
   end
   
   if on then
-    -- Only update press time if it's a fresh press (not a hold repeat)
     if not elapsed_hold then
         self.pressed_buttons[row..","..col]=self:current_time()
     end
@@ -280,7 +307,6 @@ function Granchild:key_press(row,col,on,elapsed_hold)
   end
 
   if (col%4==2 or col%4==3 or col%4==0) and row<7 and on then
-    -- change position
     self:change_position(row,col)
   elseif col%4==2 and (row==7 or row==8) and on then
     self:change_pitch_mod(row,col)
@@ -303,8 +329,6 @@ function Granchild:key_press(row,col,on,elapsed_hold)
   end
 end
 
-
-
 function Granchild:set_steps(voice,steps_string)
   print("set_steps for voice "..voice..": "..steps_string)
   if steps_string~="" then
@@ -326,7 +350,6 @@ function Granchild:toggle_recording(col)
     self.voices[voice].step_val=0
     self.voices[voice].is_playing=false
   else
-    -- save steps (silently as to not trigger)
     params:set(voice.."pattern"..params:get(voice.."scene"),json.encode(self.voices[voice].steps),true)
   end
 end
@@ -363,12 +386,11 @@ function Granchild:set_division(voice,division)
 end
 
 -- HELPER FOR DYNAMIC ACCELERATION
--- Returns multiplier for params:delta
 function Granchild:get_dynamic_delta(elapsed)
     if not elapsed then return 1 end -- Single press
-    if elapsed > 1.0 then return 2 end -- Fast (0.10 on 0.05 step)
-    if elapsed > 0.3 then return 1 end -- Normal (0.05 on 0.05 step)
-    return 0.2 -- Precision (0.01 on 0.05 step)
+    if elapsed > 1.0 then return 2 end -- Fast
+    if elapsed > 0.3 then return 1 end -- Normal
+    return 0.2 -- Precision
 end
 
 function Granchild:change_density_mod(row,col,elapsed)
@@ -429,13 +451,11 @@ function Granchild:change_position(row,col)
   params:set(voice.."seek"..params:get(voice.."scene"),util.linlin(1,num_steps,0,1,val)+(math.random()-0.5)/100)
 end
 
--- Helper to get the value with LFO applied for UI
 function Granchild:get_modulated_value(voice, param_name)
     return self.current_mod_values[voice][param_name]
 end
 
 function Granchild:get_visual()
-  --- update the blinky thing
   self.blink_count=self.blink_count+1
   if self.blink_count>1000 then
     self.blink_count=0
@@ -452,14 +472,12 @@ function Granchild:get_visual()
     end
   end
 
-  -- clear visual
   for row=1,8 do
     for col=1,self.grid_width do
       self.visual[row][col]=0
     end
   end
 
-  -- show stop/play button
   for i=1,self.num_voices do
     local row=8
     local col=4*(i-1)+4
@@ -469,7 +487,6 @@ function Granchild:get_visual()
     end
   end
 
-  -- show rec button
   for i=1,self.num_voices do
     local row=8
     local col=4*(i-1)+3
@@ -479,7 +496,6 @@ function Granchild:get_visual()
     end
   end
 
-  -- show density modifiers (Visualizing Modulated Value)
   for i=1,self.num_voices do
     local val=util.linlin(1,40,0,15, self:get_modulated_value(i, "density"))
     local col=4*(i-1)+1
@@ -487,7 +503,6 @@ function Granchild:get_visual()
     self.visual[2][col]=15-util.round(val)
   end
 
-  -- show size modifiers
   for i=1,self.num_voices do
     local val=util.linlin(1,15,0,15, self:get_modulated_value(i, "size"))
     local col=4*(i-1)+1
@@ -495,7 +510,6 @@ function Granchild:get_visual()
     self.visual[4][col]=15-util.round(val)
   end
 
-  -- show speed modifiers
   for i=1,self.num_voices do
     local val=util.linlin(-2,2,0,15, self:get_modulated_value(i, "speed"))
     local col=4*(i-1)+1
@@ -503,7 +517,6 @@ function Granchild:get_visual()
     self.visual[6][col]=15-util.round(val)
   end
 
-  -- show the volume
   for i=1,self.num_voices do
     local val=util.linlin(0,4,0,15, self:get_modulated_value(i, "volume"))
     local col=4*(i-1)+1
@@ -511,7 +524,6 @@ function Granchild:get_visual()
     self.visual[8][col]=15-util.round(val)
   end
 
-  -- show the pitch
   for i=1,self.num_voices do
     local val=util.linlin(-12,12,0,15,util.clamp(params:get(i.."pitch"..params:get(i.."scene")),-12,12))
     local col=4*(i-1)+2
@@ -519,7 +531,6 @@ function Granchild:get_visual()
     self.visual[8][col]=15-util.round(val)
   end
 
-  -- show the scene
   for i=1,self.num_voices do
     local val=params:get(i.."scene")
     if val==1 then
@@ -529,7 +540,6 @@ function Granchild:get_visual()
     end
   end
 
-  -- show current step
   for i=1,self.num_voices do
     if self.voices[i].is_recording or self.voices[i].is_playing then
       local step=self.voices[i].step
@@ -549,7 +559,6 @@ function Granchild:get_visual()
     end
   end
 
-  -- show current position
   for i=1,self.num_voices do
     if self.voices[i].position~=nil then
       local pos=util.linlin(0,1,1,num_steps,self.voices[i].position)
@@ -566,7 +575,6 @@ function Granchild:get_visual()
     end
   end
 
-  -- show tape recording
   for i=1,self.num_voices do
     local row=7
     local col=4*(i-1)+3
@@ -579,23 +587,19 @@ function Granchild:get_visual()
   return self.visual
 end
 
-
--- lfo stuff
 function Granchild:update_lfos()
   for i=1,self.num_voices do
     local scene = params:get(i.."scene")
     if params:get(i.."play"..scene)==2 then
       
-      -- FIX: Calculate Density FIRST, as Size depends on it
       local density_val = params:get(i.."density"..scene)
       local density_lfo_active = params:get(i.."densitylfo"..scene) == 2
       if density_lfo_active then
-          local m = self.mod_vals[i][5] -- 5 is density index
+          local m = self.mod_vals[i][5]
           local depth = params:get(i.."densitydepth"..scene)
           local shape = params:get(i.."densityshape"..scene)
           local lfo_val = self:calculate_lfo(m.period, m.offset, shape, i, 5)
           
-          -- PIECEWISE SCALING LOGIC
           local musical_span = m.musical[2] - m.musical[1]
           local absolute_span = m.absolute[2] - m.absolute[1]
           local current_span = 0
@@ -611,15 +615,12 @@ function Granchild:update_lfos()
           engine.density(i, density_val/(4*clock.get_beat_sec()))
           self.current_mod_values[i]["density"] = density_val
       else
-          -- LFO OFF: Ensure base value is sent/stored
           self.current_mod_values[i]["density"] = density_val
-          -- We don't strictly need to send to engine here as param change does it, 
-          -- but to be safe against "stuck" values from previous LFO state:
           engine.density(i, density_val/(4*clock.get_beat_sec()))
       end
 
       for j,m in ipairs(self.mod_vals[i]) do
-        if m.name ~= "density" then -- Skip density
+        if m.name ~= "density" then
             local lfo_active = params:get(i..m.name.."lfo"..scene) == 2
             local base_val = params:get(i..m.name..scene)
             local final_val = base_val
@@ -629,7 +630,6 @@ function Granchild:update_lfos()
               local shape = params:get(i..m.name.."shape"..scene)
               local lfo_val = self:calculate_lfo(m.period, m.offset, shape, i, j)
               
-              -- PIECEWISE SCALING LOGIC
               local musical_span = m.musical[2] - m.musical[1]
               local absolute_span = m.absolute[2] - m.absolute[1]
               local current_span = 0
@@ -656,7 +656,6 @@ function Granchild:update_lfos()
                    end
               end
             else
-                -- LFO OFF: Force send base value to Engine to fix "stuck" values
                 final_val = base_val
                 if m.name == "volume" then
                    engine.gain(i, final_val)
@@ -791,7 +790,7 @@ end
 
 function Granchild:finish_tape_load(voice)
     print("saved to '"..self.pending_tape_name.."'")
-    clock.sleep(1) -- Small safety buffer after render
+    clock.sleep(1)
     for i=1,2 do
       softcut.rec(i,0)
       softcut.play(i,0)
