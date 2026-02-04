@@ -1,14 +1,11 @@
--- granchild v3.0.6
+-- granchild v3.0.8
 -- granular sequencer
 --
 -- llllllll.co/t/granchild
 --
 -- thx @artfwo, @cfdrake,
 -- @justmat
--- Changelog v3.0.6:
--- Fix Speed: Step ajustado a 0.05.
--- Fix Scroll: Debounce de 0.2s para carga de samples.
--- Fix PSET: Hook action_loaded para sincronización.
+--
 
 engine.name="ZGlut"
 
@@ -27,6 +24,59 @@ local lfo_shapes = {"Sine", "Tri", "Saw", "Square", "S&H", "Slew"}
 -- Debounce timers for sample loading
 local sample_timers = {}
 for i=1,4 do sample_timers[i] = {} end
+
+-- Initial randomizer for LFO Frequencies to match original "Drift" feel
+local function randomize_lfo_rates()
+  local ranges = {
+    jitter = {0.03, 0.06},
+    size = {0.03, 0.08},
+    subharmonics = {0.02, 0.08},
+    overtones = {0.03, 0.05},
+    default = {0.08, 0.12}
+  }
+  for i=1,4 do
+    local lfo_targets = {"density", "size", "speed", "volume", "jitter", "spread", "subharmonics", "overtones"}
+    for _, target in ipairs(lfo_targets) do
+      local r = ranges[target] or ranges.default
+      local random_freq = r[1] + math.random() * (r[2] - r[1])
+      for scene=1,2 do
+        -- Only set if param exists (safe check)
+        if params:lookup_param(i..target.."freq"..scene) then
+           params:set(i..target.."freq"..scene, random_freq)
+        end
+      end
+    end
+  end
+end
+
+local function global_reset()
+  -- Silence
+  for i=1,4 do engine.gain(i, 0) end
+  
+  -- Unload samples
+  for i=1,4 do engine.read(i, "-") end
+  
+  -- Clear steps
+  for i=1,4 do granchild_grid.voices[i].steps = {} end
+  
+  -- Reset all params to default
+  -- Note: This resets ALL params, including the freqs we just want to randomize
+  for _, p in ipairs(params.params) do
+      if p.id and p.id ~= "global_reset" then
+          -- Avoid resetting PSET-related system params if any
+          params:set(p.id, p.default or 0)
+      end
+  end
+  
+  -- Re-apply random LFOs for "Fresh Boot" feel
+  randomize_lfo_rates()
+  
+  -- UI Reset
+  granchild_grid.tape_voice = 0
+  if _menu.rebuild_params then _menu.rebuild_params() end
+  granchild_grid:grid_redraw()
+  print("GLOBAL RESET COMPLETE")
+end
 
 local function bang(scene)
   for i=1,4 do
@@ -50,7 +100,7 @@ local function setup_params()
   local num_voices=4
   local old_volume={0.25,0.25,0.25,0.25}
   for i=1,num_voices do
-    params:add_group("sample "..i,72)
+    params:add_group("sample "..i,88) -- Increased group size for freq params
     params:add_option(i.."scene","scene",{"a","b"},1)
     params:set_action(i.."scene",function(scene)
       for _,param_name in ipairs(param_list) do
@@ -67,8 +117,10 @@ local function setup_params()
       for _, target in ipairs(lfo_targets) do
          params:hide(i..target.."depth"..(3-scene))
          params:hide(i..target.."shape"..(3-scene))
+         params:hide(i..target.."freq"..(3-scene))
          params:show(i..target.."depth"..scene)
          params:show(i..target.."shape"..scene)
+         params:show(i..target.."freq"..scene)
       end
 
       local p=params:lookup_param(i.."pattern"..scene)
@@ -85,7 +137,6 @@ local function setup_params()
       params:set_action(i.."sample"..scene,function(file)
         print("sample "..file)
         if file~="-" then
-          -- DEBOUNCE LOGIC: Wait 0.2s before loading to prevent freezing during scroll
           if sample_timers[i][scene] then clock.cancel(sample_timers[i][scene]) end
           sample_timers[i][scene] = clock.run(function()
               clock.sleep(0.2)
@@ -118,6 +169,7 @@ local function setup_params()
       params:add_option(i.."volumelfo"..scene,"volume lfo",{"off","on"},1)
       params:add_control(i.."volumedepth"..scene,"volume depth",controlspec.new(0,1,"lin",0.01,0.5))
       params:add_option(i.."volumeshape"..scene,"volume shape",lfo_shapes,1)
+      params:add_control(i.."volumefreq"..scene,"volume freq",controlspec.new(0.01,1.0,"lin",0.01,0.1,"hz"))
 
       params:add_control(i.."pan"..scene,"pan",controlspec.new(-1,1,"lin",0.01,0,"",0.01/1))
       params:set_action(i.."pan"..scene,function(value) engine.pan(i,value) end)
@@ -127,6 +179,7 @@ local function setup_params()
       params:add_option(i.."densitylfo"..scene,"density lfo",{"off","on"},1)
       params:add_control(i.."densitydepth"..scene,"density depth",controlspec.new(0,1,"lin",0.01,0.5))
       params:add_option(i.."densityshape"..scene,"density shape",lfo_shapes,1)
+      params:add_control(i.."densityfreq"..scene,"density freq",controlspec.new(0.01,1.0,"lin",0.01,0.1,"hz"))
       
       params:add_control(i.."distribution"..scene, "chaos", controlspec.new(0, 1, "lin", 0.01, 0, "", 0.01))
       params:set_action(i.."distribution"..scene, function(value) engine.distribution(i, value) end)
@@ -151,6 +204,7 @@ local function setup_params()
       params:add_option(i.."speedlfo"..scene,"speed lfo",{"off","on"},1)
       params:add_control(i.."speeddepth"..scene,"speed depth",controlspec.new(0,1,"lin",0.01,0.5))
       params:add_option(i.."speedshape"..scene,"speed shape",lfo_shapes,1)
+      params:add_control(i.."speedfreq"..scene,"speed freq",controlspec.new(0.01,1.0,"lin",0.01,0.1,"hz"))
 
       params:add_option(i.."division"..scene,"division",division_names,5)
       params:set_action(i.."division"..scene,function(value)
@@ -169,30 +223,35 @@ local function setup_params()
       params:add_option(i.."sizelfo"..scene,"size lfo",{"off","on"},1)
       params:add_control(i.."sizedepth"..scene,"size depth",controlspec.new(0,1,"lin",0.01,0.5))
       params:add_option(i.."sizeshape"..scene,"size shape",lfo_shapes,1)
+      params:add_control(i.."sizefreq"..scene,"size freq",controlspec.new(0.01,1.0,"lin",0.01,0.1,"hz"))
 
       params:add_taper(i.."jitter"..scene,"jitter",0,500,0,5,"ms")
       params:set_action(i.."jitter"..scene,function(value) engine.jitter(i,value/1000) end)
       params:add_option(i.."jitterlfo"..scene,"jitter lfo",{"off","on"},2)
       params:add_control(i.."jitterdepth"..scene,"jitter depth",controlspec.new(0,1,"lin",0.01,0.5))
       params:add_option(i.."jittershape"..scene,"jitter shape",lfo_shapes,1)
+      params:add_control(i.."jitterfreq"..scene,"jitter freq",controlspec.new(0.01,1.0,"lin",0.01,0.1,"hz"))
 
       params:add_taper(i.."spread"..scene,"spread",0,100,0,0,"%")
       params:set_action(i.."spread"..scene,function(value) engine.spread(i,value/100) end)
       params:add_option(i.."spreadlfo"..scene,"spread lfo",{"off","on"},2)
       params:add_control(i.."spreaddepth"..scene,"spread depth",controlspec.new(0,1,"lin",0.01,0.5))
       params:add_option(i.."spreadshape"..scene,"spread shape",lfo_shapes,1)
+      params:add_control(i.."spreadfreq"..scene,"spread freq",controlspec.new(0.01,1.0,"lin",0.01,0.1,"hz"))
 
       params:add_control(i.."subharmonics"..scene,"subharmonic vol",controlspec.new(0.00,1.00,"lin",0.01,0))
       params:set_action(i.."subharmonics"..scene,function(value) engine.subharmonics(i,value) end)
       params:add_option(i.."subharmonicslfo"..scene,"subharmonic lfo",{"off","on"},1)
       params:add_control(i.."subharmonicsdepth"..scene,"subharmonic depth",controlspec.new(0,1,"lin",0.01,0.5))
       params:add_option(i.."subharmonicsshape"..scene,"subharmonic shape",lfo_shapes,1)
+      params:add_control(i.."subharmonicsfreq"..scene,"subharmonic freq",controlspec.new(0.01,1.0,"lin",0.01,0.1,"hz"))
 
       params:add_control(i.."overtones"..scene,"overtone vol",controlspec.new(0.00,1.00,"lin",0.01,0))
       params:set_action(i.."overtones"..scene,function(value) engine.overtones(i,value) end)
       params:add_option(i.."overtoneslfo"..scene,"overtone lfo",{"off","on"},1)
       params:add_control(i.."overtonesdepth"..scene,"overtone depth",controlspec.new(0,1,"lin",0.01,0.5))
       params:add_option(i.."overtonesshape"..scene,"overtone shape",lfo_shapes,1)
+      params:add_control(i.."overtonesfreq"..scene,"overtone freq",controlspec.new(0.01,1.0,"lin",0.01,0.1,"hz"))
 
       params:add_text(i.."pattern"..scene,"pattern","")
       params:hide(i.."pattern"..scene)
@@ -236,6 +295,8 @@ local function setup_params()
     params:set_action("delay_volume"..scene,function(value) engine.delay_volume(value) end)
   end
   params:add_control("rec_fade","rec fade time",controlspec.new(0.0,1500,"lin",10,100,"ms",10/1500))
+  params:add_trigger("global_reset", ">> RESET ALL <<")
+  params:set_action("global_reset", function() global_reset() end)
 
   for i=1,4 do
     for _,param_name in ipairs(param_list) do
@@ -245,6 +306,7 @@ local function setup_params()
     for _, target in ipairs(lfo_targets) do
          params:hide(i..target.."depth2")
          params:hide(i..target.."shape2")
+         params:hide(i..target.."freq2")
     end
   end
   for _,param_name in ipairs(param_list_delay) do
@@ -257,6 +319,7 @@ end
 function init()
   math.randomseed(os.time())
   setup_params()
+  randomize_lfo_rates() -- Initial randomization
 
   params.action_loaded = function()
     for i=1,4 do
