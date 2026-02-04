@@ -1,11 +1,14 @@
--- granchild v3.0.4
+-- granchild v3.0.6
 -- granular sequencer
 --
 -- llllllll.co/t/granchild
 --
 -- thx @artfwo, @cfdrake,
 -- @justmat
---
+-- Changelog v3.0.6:
+-- Fix Speed: Step ajustado a 0.05.
+-- Fix Scroll: Debounce de 0.2s para carga de samples.
+-- Fix PSET: Hook action_loaded para sincronización.
 
 engine.name="ZGlut"
 
@@ -143,7 +146,7 @@ local function setup_params()
       params:add_control(i.."send"..scene,"delay send",controlspec.new(0.0,1.0,"lin",0.01,0.2))
       params:set_action(i.."send"..scene,function(value) engine.send(i,value) end)
 
-      params:add_control(i.."speed"..scene,"speed",controlspec.new(-2.0,2.0,"lin",0.01,0,"",0.01/4))
+      params:add_control(i.."speed"..scene,"speed",controlspec.new(-2.0,2.0,"lin",0.05,0,"",0.05/4))
       params:set_action(i.."speed"..scene,function(value) engine.speed(i,value) end)
       params:add_option(i.."speedlfo"..scene,"speed lfo",{"off","on"},1)
       params:add_control(i.."speeddepth"..scene,"speed depth",controlspec.new(0,1,"lin",0.01,0.5))
@@ -157,7 +160,7 @@ local function setup_params()
       end)
 
       params:add_control(i.."pos"..scene,"pos",controlspec.new(-1/40,1/40,"lin",0.001,0))
-      params:set_action(i.."pos"..scene,function(value) engine.seek(i,util.clamp(value+params:get(i.."pos"..scene),0,1)) end)
+      params:set_action(i.."pos"..scene,function(value) engine.seek(i,util.clamp(value+params:get(i.."seek"..scene),0,1)) end)
 
       params:add_control(i.."size"..scene,"size",controlspec.new(1,15,"lin",1,5,"",1/15))
       params:set_action(i.."size"..scene,function(value)
