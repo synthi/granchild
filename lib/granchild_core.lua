@@ -1,8 +1,9 @@
--- granchild_core.lua v3.0.5
+-- granchild_core.lua v3.0.6
 -- Core logic class
 -- Changelog:
--- v3.0.5: Full file regeneration to fix truncation. Kept original structure.
--- v3.0.4: Added Grid Debounce, Dynamic Acceleration, Softcut Event Render, Cleanup.
+-- v3.0.6: Implemented Piecewise LFO Scaling (Musical vs Absolute ranges). Fixed LFO Off stuck value.
+--         Grid Speed: 20Hz, Dynamic Multipliers (0.2, 1, 2). Software Debounce. Tape limit 9999.
+-- v3.0.5: Fixed file truncation.
 
 local json=include("granchild/lib/json")
 local lattice=require("lattice")
@@ -80,16 +81,16 @@ function Granchild:new(args)
     }
   end
 
-  -- setup lfos
+  -- setup lfos with MUSICAL vs ABSOLUTE ranges
   local mod_parameters={
-    {name="jitter",range={15,200},lfo={32,64}},
-    {name="spread",range={0,100},lfo={16,24}},
-    {name="volume",range={0,0.5},lfo={16,24}},
-    {name="speed",range={-0.05,0.05},lfo={16,24}},
-    {name="density",range={3,16},lfo={16,24}},
-    {name="size",range={2,12},lfo={24,58}},
-    {name="subharmonics",range={0,1},lfo={24,70}},
-    {name="overtones",range={0,0.2},lfo={36,60}},
+    {name="jitter",       musical={15,200},   absolute={0,500},   lfo={32,64}},
+    {name="spread",       musical={0,100},    absolute={0,100},   lfo={16,24}},
+    {name="volume",       musical={0,0.5},    absolute={0,4.0},   lfo={16,24}},
+    {name="speed",        musical={-0.05,0.05}, absolute={-2.0,2.0}, lfo={16,24}},
+    {name="density",      musical={3,16},     absolute={1,40},    lfo={16,24}},
+    {name="size",         musical={2,12},     absolute={1,15},    lfo={24,58}},
+    {name="subharmonics", musical={0,1},      absolute={0,1},     lfo={24,70}},
+    {name="overtones",    musical={0,0.2},    absolute={0,1},     lfo={36,60}},
   }
   m.mod_vals={}
   m.mod_state={} -- State for S&H and Slew
@@ -98,11 +99,14 @@ function Granchild:new(args)
     m.mod_vals[i]={}
     m.mod_state[i]={}
     for j,mod in ipairs(mod_parameters) do
-      local minmax=mod.range
-      local range=minmax
-      -- local center_val=(range[2]-range[1])/2
-      -- range={range[1]+(center_val-range[1])*math.random(0,100)/100,range[2]-(range[2]-center_val)*math.random(0,100)/100}
-      m.mod_vals[i][j]={name=mod.name,minmax=minmax,range=range,period=math.random(mod.lfo[1],mod.lfo[2]),offset=math.random()*30}
+      -- We store the full definition to access ranges later
+      m.mod_vals[i][j]={
+          name=mod.name,
+          musical=mod.musical,
+          absolute=mod.absolute,
+          period=math.random(mod.lfo[1],mod.lfo[2]),
+          offset=math.random()*30
+      }
       m.mod_state[i][j]={
         last_phase=0,
         sample=0,
@@ -152,7 +156,7 @@ function Granchild:new(args)
 
   -- metro for checking if keys are held to toggle re-presses
   m.key_held=metro.init()
-  m.key_held.time=0.04 -- SPEED UP: 25Hz for faster grid response
+  m.key_held.time=0.05 -- SPEED UP: 20Hz (0.05s) as requested
   m.key_held.event=function()
     -- only on column 1, 5, 9, 13
     local cols={1,5,9,13}
@@ -162,7 +166,7 @@ function Granchild:new(args)
         if m.pressed_buttons[row..","..col]~=nil then
           local elapsed_time=cur_time-m.pressed_buttons[row..","..col]
           -- DYNAMIC ACCELERATION LOGIC
-          if elapsed_time > 0.04 then
+          if elapsed_time > 0.05 then
              -- We pass 'true' to key_press to indicate it's a hold repeat
              -- We pass 'elapsed_time' to calculate dynamic speed
              m:key_press(row,col,true, elapsed_time)
@@ -271,19 +275,8 @@ function Granchild:key_press(row,col,on,elapsed_hold)
     if not elapsed_hold then
         self.pressed_buttons[row..","..col]=self:current_time()
     end
-    -- if row==8 and col==2 and self.toggleable then
-    --   self.kill_timer=self:current_time()
-    -- end
   else
     self.pressed_buttons[row..","..col]=nil
-    -- if row==8 and col==2 and self.toggleable then
-    --   self.kill_timer=self:current_time()-self.kill_timer
-    --   if self.kill_timer>1 then
-    --     print("switching!")
-    --     self:toggle_grid(false)
-    --   end
-    --   self.kill_timer=0
-    -- end
   end
 
   if (col%4==2 or col%4==3 or col%4==0) and row<7 and on then
@@ -370,11 +363,12 @@ function Granchild:set_division(voice,division)
 end
 
 -- HELPER FOR DYNAMIC ACCELERATION
+-- Returns multiplier for params:delta
 function Granchild:get_dynamic_delta(elapsed)
     if not elapsed then return 1 end -- Single press
-    if elapsed > 1.0 then return 10 end
-    if elapsed > 0.3 then return 5 end
-    return 1
+    if elapsed > 1.0 then return 2 end -- Fast (0.10 on 0.05 step)
+    if elapsed > 0.3 then return 1 end -- Normal (0.05 on 0.05 step)
+    return 0.2 -- Precision (0.01 on 0.05 step)
 end
 
 function Granchild:change_density_mod(row,col,elapsed)
@@ -585,40 +579,6 @@ function Granchild:get_visual()
   return self.visual
 end
 
-function Granchild:pos_to_row_col(pos)
-  local row=math.floor((pos-1)/3)+1
-  local col=pos-(row-1)*3+1
-  return row,col
-end
-
-function Granchild:current_time()
-  return clock.get_beat_sec()*clock.get_beats()
-end
-
-function Granchild:grid_redraw()
-  self.g:all(0)
-  local gd=self:get_visual()
-  local s=1
-  local e=self.grid_width
-  local adj=0
-  if self.grid64 then
-    e=8
-    if not self.grid64default then
-      s=9
-      e=16
-      adj=-8
-    end
-  end
-  for row=1,8 do
-    for col=s,e do
-      if gd[row][col]~=0 then
-        self.g:led(col+adj,row,gd[row][col])
-      end
-    end
-  end
-  self.g:refresh()
-end
-
 
 -- lfo stuff
 function Granchild:update_lfos()
@@ -630,22 +590,36 @@ function Granchild:update_lfos()
       local density_val = params:get(i.."density"..scene)
       local density_lfo_active = params:get(i.."densitylfo"..scene) == 2
       if density_lfo_active then
-          -- Find density mod params manually since we need it before loop
-          local m = self.mod_vals[i][5] -- 5 is density index in mod_parameters
+          local m = self.mod_vals[i][5] -- 5 is density index
           local depth = params:get(i.."densitydepth"..scene)
           local shape = params:get(i.."densityshape"..scene)
           local lfo_val = self:calculate_lfo(m.period, m.offset, shape, i, 5)
-          local range_span = m.range[2] - m.range[1]
-          local offset = (range_span / 2) * lfo_val * depth
-          density_val = util.clamp(density_val + offset, m.minmax[1], m.minmax[2])
+          
+          -- PIECEWISE SCALING LOGIC
+          local musical_span = m.musical[2] - m.musical[1]
+          local absolute_span = m.absolute[2] - m.absolute[1]
+          local current_span = 0
+          if depth <= 0.5 then
+              current_span = (depth / 0.5) * musical_span
+          else
+              current_span = util.linlin(0.5, 1.0, musical_span, absolute_span, depth)
+          end
+          
+          local offset = (current_span / 2) * lfo_val
+          density_val = util.clamp(density_val + offset, m.absolute[1], m.absolute[2])
+          
           engine.density(i, density_val/(4*clock.get_beat_sec()))
           self.current_mod_values[i]["density"] = density_val
       else
+          -- LFO OFF: Ensure base value is sent/stored
           self.current_mod_values[i]["density"] = density_val
+          -- We don't strictly need to send to engine here as param change does it, 
+          -- but to be safe against "stuck" values from previous LFO state:
+          engine.density(i, density_val/(4*clock.get_beat_sec()))
       end
 
       for j,m in ipairs(self.mod_vals[i]) do
-        if m.name ~= "density" then -- Skip density as we did it
+        if m.name ~= "density" then -- Skip density
             local lfo_active = params:get(i..m.name.."lfo"..scene) == 2
             local base_val = params:get(i..m.name..scene)
             local final_val = base_val
@@ -655,16 +629,23 @@ function Granchild:update_lfos()
               local shape = params:get(i..m.name.."shape"..scene)
               local lfo_val = self:calculate_lfo(m.period, m.offset, shape, i, j)
               
-              local range_span = m.range[2] - m.range[1]
-              local offset = (range_span / 2) * lfo_val * depth
+              -- PIECEWISE SCALING LOGIC
+              local musical_span = m.musical[2] - m.musical[1]
+              local absolute_span = m.absolute[2] - m.absolute[1]
+              local current_span = 0
+              if depth <= 0.5 then
+                  current_span = (depth / 0.5) * musical_span
+              else
+                  current_span = util.linlin(0.5, 1.0, musical_span, absolute_span, depth)
+              end
               
-              final_val = util.clamp(base_val + offset, m.minmax[1], m.minmax[2])
+              local offset = (current_span / 2) * lfo_val
+              final_val = util.clamp(base_val + offset, m.absolute[1], m.absolute[2])
               
               if m.name == "volume" then
                  engine.gain(i, final_val)
               elseif engine[m.name] then
                    if m.name == "size" then
-                       -- FIX: Use calculated density_val, not params:get
                        engine.size(i, util.clamp(final_val*clock.get_beat_sec()/10, 0.001, util.linlin(1,40,1,0.1, density_val)))
                    elseif m.name == "jitter" then
                        engine.jitter(i, final_val/1000)
@@ -675,7 +656,21 @@ function Granchild:update_lfos()
                    end
               end
             else
+                -- LFO OFF: Force send base value to Engine to fix "stuck" values
                 final_val = base_val
+                if m.name == "volume" then
+                   engine.gain(i, final_val)
+                elseif engine[m.name] then
+                     if m.name == "size" then
+                         engine.size(i, util.clamp(final_val*clock.get_beat_sec()/10, 0.001, util.linlin(1,40,1,0.1, density_val)))
+                     elseif m.name == "jitter" then
+                         engine.jitter(i, final_val/1000)
+                     elseif m.name == "spread" then
+                         engine.spread(i, final_val/100)
+                     else
+                         engine[m.name](i, final_val)
+                     end
+                end
             end
             self.current_mod_values[i][m.name] = final_val
         end
@@ -690,7 +685,6 @@ function Granchild:calculate_lfo(period_in_beats, offset, shape, voice_idx, mod_
   local phase = (clock.get_beats() / period_in_beats + offset) % 1
   local val = 0
   
-  -- 1=Sine, 2=Tri, 3=Saw, 4=Square, 5=Random, 6=Slew Random
   if shape == 1 then -- Sine
     val = math.sin(2 * math.pi * phase)
   elseif shape == 2 then -- Triangle
@@ -701,7 +695,6 @@ function Granchild:calculate_lfo(period_in_beats, offset, shape, voice_idx, mod_
     val = phase < 0.5 and 1 or -1
   elseif shape == 5 or shape == 6 then -- Random / Slew
     local state = self.mod_state[voice_idx][mod_idx]
-    -- Detect phase wrap for new random value
     if phase < state.last_phase then
         state.sample = state.target
         state.target = math.random() * 2 - 1
@@ -711,7 +704,6 @@ function Granchild:calculate_lfo(period_in_beats, offset, shape, voice_idx, mod_
     if shape == 5 then -- S&H
         val = state.target
     else -- Slew Random
-        -- Interpolate between sample and target based on phase
         val = state.sample + (state.target - state.sample) * phase
     end
   end
@@ -721,13 +713,11 @@ end
 
 function Granchild:rec_start(voice)
   if self.tape_voice>0 then
-    -- only allow one at a time
-    self.rec_stop()
+    self:rec_stop()
   end
   self.tape_voice=voice
   audio.level_eng_cut(0)
   audio.level_tape_cut(0)
-  --softcut.reset()
   softcut.buffer_clear()
   for i=1,2 do
     softcut.enable(i,1)
@@ -779,7 +769,6 @@ function Granchild:rec_start(voice)
 end
 
 function Granchild:rec_stop()
-  local voice=self.tape_voice
   local total_length=self:current_time()-self.tape_start+params:get("rec_fade")/1000+params:get("rec_fade")/1000/10*1
   clock.run(function()
     for j=1,10 do
@@ -792,19 +781,16 @@ function Granchild:rec_stop()
     
     local tape_name=self:tape_get_name()
     if tape_name~=nil then
-      -- FIX: Use buffer_write_stereo and wait for event_render callback
-      -- We store the target name in a temp variable to use in the callback
       self.pending_tape_name = tape_name
       softcut.buffer_write_stereo(tape_name,2,total_length)
     else
-      self.tape_voice=0 -- Reset if failed
+      self.tape_voice=0
     end
   end)
 end
 
 function Granchild:finish_tape_load(voice)
     print("saved to '"..self.pending_tape_name.."'")
-    -- load the tape into the current voice
     clock.sleep(1) -- Small safety buffer after render
     for i=1,2 do
       softcut.rec(i,0)
@@ -820,7 +806,7 @@ function Granchild:tape_get_name()
   if not util.file_exists(_path.audio.."granchild/") then
     os.execute("mkdir -p ".._path.audio.."granchild/")
   end
-  for index=1,1000 do
+  for index=1,9999 do
     index=string.format("%04d",index)
     local filename=_path.audio.."granchild/"..index..".wav"
     if not util.file_exists(filename) then
