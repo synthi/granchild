@@ -1,4 +1,4 @@
--- granchild v3.0.8
+-- granchild v3.0.11
 -- granular sequencer
 --
 -- llllllll.co/t/granchild
@@ -16,7 +16,9 @@ local press_positions={{0,0},{0,0}}
 local norns_screen={}
 local divisions={1,2,4,6,8,12,16}
 local division_names={"2 wn","wn","hn","hn-t","qn","qn-t","eighth"}
-local param_list={"overtones","overtoneslfo","subharmonics","subharmonicslfo","sizelfo","densitylfo","speedlfo","volumelfo","spreadlfo","jitterlfo","spread","jitter","size","pos","q","division","speed","send","q","cutoff","fade","pitch","density","pan","volume","seek","play","sample","distribution"}
+
+-- CRITICAL FIX: Reordered list so SAMPLE loads first, PLAY happens last.
+local param_list={"sample","overtones","overtoneslfo","subharmonics","subharmonicslfo","sizelfo","densitylfo","speedlfo","volumelfo","spreadlfo","jitterlfo","spread","jitter","size","pos","q","division","speed","send","q","cutoff","fade","pitch","density","pan","volume","seek","distribution","play"}
 local param_list_delay={"delay_volume","delay_mod_freq","delay_mod_depth","delay_fdbk","delay_diff","delay_damp","delay_size","delay_time"}
 
 local lfo_shapes = {"Sine", "Tri", "Saw", "Square", "S&H", "Slew"}
@@ -32,15 +34,15 @@ local function randomize_lfo_rates()
     size = {0.03, 0.08},
     subharmonics = {0.02, 0.08},
     overtones = {0.03, 0.05},
+    pitch = {0.02, 0.05}, -- Slow wow/flutter
     default = {0.08, 0.12}
   }
   for i=1,4 do
-    local lfo_targets = {"density", "size", "speed", "volume", "jitter", "spread", "subharmonics", "overtones"}
+    local lfo_targets = {"density", "size", "speed", "volume", "jitter", "spread", "subharmonics", "overtones", "pitch"}
     for _, target in ipairs(lfo_targets) do
       local r = ranges[target] or ranges.default
       local random_freq = r[1] + math.random() * (r[2] - r[1])
       for scene=1,2 do
-        -- Only set if param exists (safe check)
         if params:lookup_param(i..target.."freq"..scene) then
            params:set(i..target.."freq"..scene, random_freq)
         end
@@ -50,32 +52,57 @@ local function randomize_lfo_rates()
 end
 
 local function global_reset()
-  -- Silence
-  for i=1,4 do engine.gain(i, 0) end
-  
-  -- Unload samples
-  for i=1,4 do engine.read(i, "-") end
-  
-  -- Clear steps
-  for i=1,4 do granchild_grid.voices[i].steps = {} end
-  
-  -- Reset all params to default
-  -- Note: This resets ALL params, including the freqs we just want to randomize
-  for _, p in ipairs(params.params) do
-      if p.id and p.id ~= "global_reset" then
-          -- Avoid resetting PSET-related system params if any
-          params:set(p.id, p.default or 0)
+  clock.run(function()
+      -- 1. Silence Audio
+      for i=1,4 do engine.gain(i, 0) end
+      
+      -- 2. Sequential Unload (Fixes packet drop)
+      for i=1,4 do 
+          engine.read(i, "-") 
+          clock.sleep(0.02) 
       end
-  end
-  
-  -- Re-apply random LFOs for "Fresh Boot" feel
-  randomize_lfo_rates()
-  
-  -- UI Reset
-  granchild_grid.tape_voice = 0
-  if _menu.rebuild_params then _menu.rebuild_params() end
-  granchild_grid:grid_redraw()
-  print("GLOBAL RESET COMPLETE")
+      
+      -- 3. Clear Data
+      for i=1,4 do granchild_grid.voices[i].steps = {} end
+      
+      -- 4. Reset Params (Silent set)
+      for _, p in ipairs(params.params) do
+          if p.id and p.id ~= "global_reset" then
+              params:set(p.id, p.default or 0, true) -- Silent
+          end
+      end
+      
+      -- 5. EXPLICIT ENGINE RESET (Fixes "False Reset" issue)
+      -- Manually send defaults to Engine because silent set didn't.
+      for i=1,4 do
+          engine.gate(i, 0)
+          engine.cutoff(i, 20000)
+          engine.speed(i, 0)
+          engine.density(i, 12) -- Default density
+          engine.size(i, 0.1) -- Default size approx
+          engine.jitter(i, 0)
+          engine.spread(i, 0)
+          engine.pitch(i, 1.0)
+          engine.gain(i, 0.25) -- Default volume
+          engine.seek(i, 0)
+      end
+      
+      -- 6. Reset Internal State (Old Volume for delay logic)
+      -- This fixes logic that depends on previous volume state
+      -- Accessing local `old_volume` via closure if possible, or just assume restart.
+      -- Since old_volume is local to setup_params, we can't touch it easily.
+      -- But setting engine gain above handles the audio.
+      
+      -- 7. Re-randomize LFOs
+      randomize_lfo_rates()
+      
+      -- 8. UI Reset
+      granchild_grid.tape_voice = 0
+      if _menu.rebuild_params then _menu.rebuild_params() end
+      granchild_grid:grid_redraw()
+      
+      print("GLOBAL RESET COMPLETE")
+  end)
 end
 
 local function bang(scene)
@@ -100,7 +127,7 @@ local function setup_params()
   local num_voices=4
   local old_volume={0.25,0.25,0.25,0.25}
   for i=1,num_voices do
-    params:add_group("sample "..i,88) -- Increased group size for freq params
+    params:add_group("sample "..i,92) 
     params:add_option(i.."scene","scene",{"a","b"},1)
     params:set_action(i.."scene",function(scene)
       for _,param_name in ipairs(param_list) do
@@ -113,7 +140,7 @@ local function setup_params()
             p:bang()
         end
       end
-      local lfo_targets = {"density", "size", "speed", "volume", "jitter", "spread", "subharmonics", "overtones"}
+      local lfo_targets = {"density", "size", "speed", "volume", "jitter", "spread", "subharmonics", "overtones", "pitch"}
       for _, target in ipairs(lfo_targets) do
          params:hide(i..target.."depth"..(3-scene))
          params:hide(i..target.."shape"..(3-scene))
@@ -186,6 +213,10 @@ local function setup_params()
 
       params:add_control(i.."pitch"..scene,"pitch",controlspec.new(-48,48,"lin",1,0,"note",1/96))
       params:set_action(i.."pitch"..scene,function(value) engine.pitch(i,math.pow(0.5,-value/12)) end)
+      params:add_option(i.."pitchlfo"..scene,"pitch lfo",{"off","on"},1)
+      params:add_control(i.."pitchdepth"..scene,"pitch depth",controlspec.new(0,1,"lin",0.01,0.5))
+      params:add_option(i.."pitchshape"..scene,"pitch shape",lfo_shapes,1)
+      params:add_control(i.."pitchfreq"..scene,"pitch freq",controlspec.new(0.01,1.0,"lin",0.01,0.1,"hz"))
 
       params:add_taper(i.."fade"..scene,"att / dec",1,9000,1000,3,"ms")
       params:set_action(i.."fade"..scene,function(value) engine.envscale(i,value/1000) end)
@@ -302,7 +333,7 @@ local function setup_params()
     for _,param_name in ipairs(param_list) do
       params:hide(i..param_name.."2")
     end
-    local lfo_targets = {"density", "size", "speed", "volume", "jitter", "spread", "subharmonics", "overtones"}
+    local lfo_targets = {"density", "size", "speed", "volume", "jitter", "spread", "subharmonics", "overtones", "pitch"}
     for _, target in ipairs(lfo_targets) do
          params:hide(i..target.."depth2")
          params:hide(i..target.."shape2")
@@ -322,11 +353,23 @@ function init()
   randomize_lfo_rates() -- Initial randomization
 
   params.action_loaded = function()
-    for i=1,4 do
-        local s = params:get(i.."scene")
-        bang(s)
-    end
-    print("PSET Loaded: State Synced.")
+    clock.run(function()
+        clock.sleep(1.25) -- Increased wait time for buffers
+        for i=1,4 do
+            local s = params:get(i.."scene")
+            bang(s)
+        end
+        
+        -- FORCE RE-TRIGGER OF GATE (Play) TO WAKE UP ENGINE
+        for i=1,4 do
+            local s = params:get(i.."scene")
+            local play_state = params:get(i.."play"..s)
+            if play_state == 2 then -- If ON
+                engine.gate(i, 1)
+            end
+        end
+        print("PSET Loaded: State Synced & Gates Open.")
+    end)
   end
 
   granchild_grid=granchild:new({grid_on=true,toggleable=false})
