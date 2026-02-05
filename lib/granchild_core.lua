@@ -1,9 +1,9 @@
--- granchild_core.lua v3.0.8
+-- granchild_core.lua v3.0.11
 -- Core logic class
 -- Changelog:
--- v3.0.8: LFOs now use external 'freq' parameters (Hz) converted to beats.
--- v3.0.7: Restored missing utility functions.
--- v3.0.6: Piecewise LFO Scaling, Grid Fixes, Tape Fixes.
+-- v3.0.11: CRITICAL FIX: Whitelist logic for key_press to prevent auto-repeat on Toggle buttons.
+-- v3.0.10: Previous fix attempts.
+-- v3.0.7-9: LFOs, Grid Speed, Utilities restored.
 
 local json=include("granchild/lib/json")
 local lattice=require("lattice")
@@ -82,7 +82,6 @@ function Granchild:new(args)
   end
 
   -- setup lfos with MUSICAL vs ABSOLUTE ranges
-  -- Note: Period/LFO values here are now only used for initial randomization ranges in the main script
   local mod_parameters={
     {name="jitter",       musical={15,200},   absolute={0,500},   lfo={32,64}},
     {name="spread",       musical={0,100},    absolute={0,100},   lfo={16,24}},
@@ -92,6 +91,7 @@ function Granchild:new(args)
     {name="size",         musical={2,12},     absolute={1,15},    lfo={24,58}},
     {name="subharmonics", musical={0,1},      absolute={0,1},     lfo={24,70}},
     {name="overtones",    musical={0,0.2},    absolute={0,1},     lfo={36,60}},
+    {name="pitch",        musical={-0.05,0.05}, absolute={-0.5,0.5}, lfo={24,60}},
   }
   m.mod_vals={}
   m.mod_state={} 
@@ -104,7 +104,6 @@ function Granchild:new(args)
           name=mod.name,
           musical=mod.musical,
           absolute=mod.absolute,
-          -- Period is now controlled by params, but we keep structure
           offset=math.random()*30
       }
       m.mod_state[i][j]={
@@ -197,7 +196,7 @@ function Granchild:cleanup()
   end
 end
 
--- UTILITY FUNCTIONS (CRITICAL)
+-- UTILITY FUNCTIONS
 function Granchild:pos_to_row_col(pos)
   local row=math.floor((pos-1)/3)+1
   local col=pos-(row-1)*3+1
@@ -284,7 +283,6 @@ function Granchild:set_toggle_callback(fn)
 end
 
 function Granchild:grid_key(x,y,z)
-  -- DEBOUNCE CHECK (30ms)
   local now = util.time()
   if self.last_press_time[y] and self.last_press_time[y][x] and (now - self.last_press_time[y][x] < 0.03) then
       return -- Ignore bounce
@@ -298,6 +296,18 @@ end
 function Granchild:key_press(row,col,on,elapsed_hold)
   if self.grid64 and not self.grid64default then
     col=col+8
+  end
+  
+  -- WHITELIST LOGIC FOR AUTO-REPEAT
+  -- Only allow auto-repeat (elapsed_hold) for specific parameter buttons.
+  if elapsed_hold then
+      -- Whitelist: Column 1 (Params) OR Column 2 Rows 7-8 (Pitch)
+      local is_col1 = (col % 4 == 1)
+      local is_pitch = (col % 4 == 2) and (row == 7 or row == 8)
+      
+      if not (is_col1 or is_pitch) then
+          return -- Block repeat for everything else (Rec, Play, Tape, Scene, Timeline)
+      end
   end
   
   if on then
@@ -387,13 +397,11 @@ function Granchild:set_division(voice,division)
   self.voices[voice].division=division
 end
 
--- HELPER FOR DYNAMIC ACCELERATION
--- Base step is 0.05
 function Granchild:get_dynamic_delta(elapsed)
-    if not elapsed then return 1 end -- Single press
-    if elapsed > 1.0 then return 2 end -- 0.10 increment
-    if elapsed > 0.3 then return 1 end -- 0.05 increment
-    return 1 -- Default
+    if not elapsed then return 1 end 
+    if elapsed > 1.0 then return 2 end 
+    if elapsed > 0.3 then return 1 end 
+    return 0.2 
 end
 
 function Granchild:change_density_mod(row,col,elapsed)
@@ -595,15 +603,13 @@ function Granchild:update_lfos()
     local scene = params:get(i.."scene")
     if params:get(i.."play"..scene)==2 then
       
-      -- FIX: Calculate Density FIRST, as Size depends on it
+      -- Density first (dependency)
       local density_val = params:get(i.."density"..scene)
       local density_lfo_active = params:get(i.."densitylfo"..scene) == 2
       if density_lfo_active then
-          local m = self.mod_vals[i][5]
+          local m = self.mod_vals[i][5] -- density index
           local depth = params:get(i.."densitydepth"..scene)
           local shape = params:get(i.."densityshape"..scene)
-          
-          -- NEW: Calculate period from Hz param
           local freq = params:get(i.."densityfreq"..scene)
           local bps = clock.get_beat_sec()
           local period_in_beats = (1.0 / freq) / bps
@@ -637,8 +643,6 @@ function Granchild:update_lfos()
             if lfo_active then
               local depth = params:get(i..m.name.."depth"..scene)
               local shape = params:get(i..m.name.."shape"..scene)
-              
-              -- NEW: Calculate period from Hz param
               local freq = params:get(i..m.name.."freq"..scene)
               local bps = clock.get_beat_sec()
               local period_in_beats = (1.0 / freq) / bps
@@ -656,8 +660,12 @@ function Granchild:update_lfos()
               local offset = (current_span / 2) * lfo_val
               final_val = util.clamp(base_val + offset, m.absolute[1], m.absolute[2])
               
+              -- APPLY TO ENGINE
               if m.name == "volume" then
                  engine.gain(i, final_val)
+              elseif m.name == "pitch" then
+                 -- Pitch special case: base + offset (semitones) -> convert to rate
+                 engine.pitch(i, math.pow(0.5, -final_val/12))
               elseif engine[m.name] then
                    if m.name == "size" then
                        engine.size(i, util.clamp(final_val*clock.get_beat_sec()/10, 0.001, util.linlin(1,40,1,0.1, density_val)))
@@ -670,9 +678,12 @@ function Granchild:update_lfos()
                    end
               end
             else
+                -- LFO OFF: Restore base value to fix stuck values
                 final_val = base_val
                 if m.name == "volume" then
                    engine.gain(i, final_val)
+                elseif m.name == "pitch" then
+                   engine.pitch(i, math.pow(0.5, -final_val/12))
                 elseif engine[m.name] then
                      if m.name == "size" then
                          engine.size(i, util.clamp(final_val*clock.get_beat_sec()/10, 0.001, util.linlin(1,40,1,0.1, density_val)))
