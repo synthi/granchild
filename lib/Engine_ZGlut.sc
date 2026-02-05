@@ -1,8 +1,7 @@
-// Engine_ZGlut v3.0.5
+// Engine_ZGlut v3.0.13
 // Changelog:
-// - CRITICAL FIX: Restored keyword arguments for GrainBuf.ar to fix argument mismatch (caused "Too many grains" and silence).
-// - Kept robust "Cascade Loading" for Mono/Stereo (No SoundFile class).
-// - Kept NaN protection.
+// - v3.0.13: Added logic to clear buffers when path is "-".
+// - v3.0.5: Fixed GrainBuf args. Robust loading (Cascade). NaN protection.
 
 Engine_ZGlut : CroneEngine {
 	classvar nvoices = 4;
@@ -26,29 +25,36 @@ Engine_ZGlut : CroneEngine {
 		var pathStr = path.asString;
 
 		if(buffers[i].notNil, {
-			if (File.exists(pathStr), {
-				// ROBUST LOADING STRATEGY (Cascade):
-				// 1. Load Ch 0 to Left.
-				// 2. Load Ch 0 to Right (Fallback).
-				// 3. Try Load Ch 1 to Right (Stereo).
-				
-				Buffer.readChannel(context.server, pathStr, 0, -1, [0], { arg newbufL;
-					voices[i].set(\buf, newbufL);
-					buffers[i].free;
-					buffers[i] = newbufL;
+			// RESET COMMAND HANDLER
+			if (pathStr == "-", {
+				// Clear buffers to silence
+				buffers[i].zero;
+				buffers[i+4].zero;
+			}, {
+				// NORMAL LOAD HANDLER
+				if (File.exists(pathStr), {
+					// Cascade Loading for Mono/Stereo robustness
+					// 1. Load Ch 0 to Left
+					Buffer.readChannel(context.server, pathStr, 0, -1, [0], { arg newbufL;
+						voices[i].set(\buf, newbufL);
+						buffers[i].free;
+						buffers[i] = newbufL;
 
-					Buffer.readChannel(context.server, pathStr, 0, -1, [0], { arg newbufR_Mono;
-						voices[i].set(\buf2, newbufR_Mono);
-						buffers[i+4].free;
-						buffers[i+4] = newbufR_Mono;
+						// 2. Load Ch 0 to Right (Fallback)
+						Buffer.readChannel(context.server, pathStr, 0, -1, [0], { arg newbufR_Mono;
+							voices[i].set(\buf2, newbufR_Mono);
+							buffers[i+4].free;
+							buffers[i+4] = newbufR_Mono;
 
-						Buffer.readChannel(context.server, pathStr, 0, -1, [1], { arg newbufR_Stereo;
-							if(newbufR_Stereo.numFrames > 0, {
-								voices[i].set(\buf2, newbufR_Stereo);
-								buffers[i+4].free;
-								buffers[i+4] = newbufR_Stereo;
-							}, {
-								newbufR_Stereo.free;
+							// 3. Try Load Ch 1 to Right (Stereo)
+							Buffer.readChannel(context.server, pathStr, 0, -1, [1], { arg newbufR_Stereo;
+								if(newbufR_Stereo.numFrames > 0, {
+									voices[i].set(\buf2, newbufR_Stereo);
+									buffers[i+4].free;
+									buffers[i+4] = newbufR_Stereo;
+								}, {
+									newbufR_Stereo.free;
+								});
 							});
 						});
 					});
@@ -119,7 +125,6 @@ Engine_ZGlut : CroneEngine {
 
 			pos_sig = Wrap.kr(Select.kr(freeze, [buf_pos, pos]));
 
-			// FIXED: Using explicit keyword arguments to ensure correct mapping
 			sig = GrainBuf.ar(numChannels: 2, trigger: grain_trig, dur: size, sndbuf: buf, rate: pitch, pos: pos_sig + jitter_sig, interp: 2, pan: pan_sig, maxGrains: 96, mul: main_vol) +
 				  GrainBuf.ar(numChannels: 2, trigger: grain_trig, dur: size, sndbuf: buf2, rate: pitch, pos: pos_sig + jitter_sig, interp: 2, pan: pan_sig2, maxGrains: 96, mul: main_vol) +
 				  
