@@ -1,4 +1,4 @@
--- granchild v3.0.11
+-- granchild v3.0.13
 -- granular sequencer
 --
 -- llllllll.co/t/granchild
@@ -65,38 +65,35 @@ local function global_reset()
       -- 3. Clear Data
       for i=1,4 do granchild_grid.voices[i].steps = {} end
       
-      -- 4. Reset Params (Silent set)
+      -- 4. Reset Params (CRITICAL FIX: Check Type to avoid crash)
       for _, p in ipairs(params.params) do
           if p.id and p.id ~= "global_reset" then
-              params:set(p.id, p.default or 0, true) -- Silent
+              if p.t == params.tFILE then
+                  params:set(p.id, "-", true) -- Silent file clear
+              else
+                  params:set(p.id, p.default or 0, true) -- Silent number clear
+              end
           end
       end
       
       -- 5. EXPLICIT ENGINE RESET (Fixes "False Reset" issue)
-      -- Manually send defaults to Engine because silent set didn't.
       for i=1,4 do
           engine.gate(i, 0)
           engine.cutoff(i, 20000)
           engine.speed(i, 0)
-          engine.density(i, 12) -- Default density
-          engine.size(i, 0.1) -- Default size approx
+          engine.density(i, 12)
+          engine.size(i, 0.1)
           engine.jitter(i, 0)
           engine.spread(i, 0)
           engine.pitch(i, 1.0)
-          engine.gain(i, 0.25) -- Default volume
+          engine.gain(i, 0.25)
           engine.seek(i, 0)
       end
       
-      -- 6. Reset Internal State (Old Volume for delay logic)
-      -- This fixes logic that depends on previous volume state
-      -- Accessing local `old_volume` via closure if possible, or just assume restart.
-      -- Since old_volume is local to setup_params, we can't touch it easily.
-      -- But setting engine gain above handles the audio.
-      
-      -- 7. Re-randomize LFOs
+      -- 6. Re-randomize LFOs
       randomize_lfo_rates()
       
-      -- 8. UI Reset
+      -- 7. UI Reset
       granchild_grid.tape_voice = 0
       if _menu.rebuild_params then _menu.rebuild_params() end
       granchild_grid:grid_redraw()
@@ -127,33 +124,34 @@ local function setup_params()
   local num_voices=4
   local old_volume={0.25,0.25,0.25,0.25}
   for i=1,num_voices do
-    params:add_group("sample "..i,92) 
-    params:add_option(i.."scene","scene",{"a","b"},1)
-    params:set_action(i.."scene",function(scene)
+    local voice_idx = i -- CRITICAL FIX: Capture loop variable for closures
+    params:add_group("sample "..voice_idx,92) 
+    params:add_option(voice_idx.."scene","scene",{"a","b"},1)
+    params:set_action(voice_idx.."scene",function(scene)
       for _,param_name in ipairs(param_list) do
-        if params:lookup_param(i..param_name..(3-scene)) then
-            params:hide(i..param_name..(3-scene))
+        if params:lookup_param(voice_idx..param_name..(3-scene)) then
+            params:hide(voice_idx..param_name..(3-scene))
         end
-        if params:lookup_param(i..param_name..scene) then
-            params:show(i..param_name..scene)
-            local p=params:lookup_param(i..param_name..scene)
+        if params:lookup_param(voice_idx..param_name..scene) then
+            params:show(voice_idx..param_name..scene)
+            local p=params:lookup_param(voice_idx..param_name..scene)
             p:bang()
         end
       end
       local lfo_targets = {"density", "size", "speed", "volume", "jitter", "spread", "subharmonics", "overtones", "pitch"}
       for _, target in ipairs(lfo_targets) do
-         params:hide(i..target.."depth"..(3-scene))
-         params:hide(i..target.."shape"..(3-scene))
-         params:hide(i..target.."freq"..(3-scene))
-         params:show(i..target.."depth"..scene)
-         params:show(i..target.."shape"..scene)
-         params:show(i..target.."freq"..scene)
+         params:hide(voice_idx..target.."depth"..(3-scene))
+         params:hide(voice_idx..target.."shape"..(3-scene))
+         params:hide(voice_idx..target.."freq"..(3-scene))
+         params:show(voice_idx..target.."depth"..scene)
+         params:show(voice_idx..target.."shape"..scene)
+         params:show(voice_idx..target.."freq"..scene)
       end
 
-      local p=params:lookup_param(i.."pattern"..scene)
+      local p=params:lookup_param(voice_idx.."pattern"..scene)
       p:bang()
-      if params:get(i.."pattern"..scene)=="" or params:get(i.."pattern"..scene)=="[]" then
-        granchild_grid:toggle_playing_voice(i,false)
+      if params:get(voice_idx.."pattern"..scene)=="" or params:get(voice_idx.."pattern"..scene)=="[]" then
+        granchild_grid:toggle_playing_voice(voice_idx,false)
       end
       if _menu.rebuild_params~=nil then
         _menu.rebuild_params()
@@ -356,16 +354,18 @@ function init()
     clock.run(function()
         clock.sleep(1.25) -- Increased wait time for buffers
         for i=1,4 do
-            local s = params:get(i.."scene")
+            local voice_idx = i -- Explicit local
+            local s = params:get(voice_idx.."scene")
             bang(s)
         end
         
         -- FORCE RE-TRIGGER OF GATE (Play) TO WAKE UP ENGINE
         for i=1,4 do
-            local s = params:get(i.."scene")
-            local play_state = params:get(i.."play"..s)
+            local voice_idx = i -- Explicit local
+            local s = params:get(voice_idx.."scene")
+            local play_state = params:get(voice_idx.."play"..s)
             if play_state == 2 then -- If ON
-                engine.gate(i, 1)
+                engine.gate(voice_idx, 1)
             end
         end
         print("PSET Loaded: State Synced & Gates Open.")
