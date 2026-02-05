@@ -1,8 +1,8 @@
--- granchild_core.lua v3.0.11
+-- granchild_core.lua v3.0.13
 -- Core logic class
 -- Changelog:
--- v3.0.11: CRITICAL FIX: Whitelist logic for key_press to prevent auto-repeat on Toggle buttons.
--- v3.0.10: Previous fix attempts.
+-- v3.0.13: FIX: Removed Debounce logic entirely (pass-through) to fix stuck buttons. Kept Whitelist.
+-- v3.0.11: Whitelist logic.
 -- v3.0.7-9: LFOs, Grid Speed, Utilities restored.
 
 local json=include("granchild/lib/json")
@@ -55,10 +55,6 @@ function Granchild:new(args)
   -- keep track of pressed buttons
   m.pressed_buttons={}
   
-  -- DEBOUNCE: Store last press time per button
-  m.last_press_time={}
-  for r=1,8 do m.last_press_time[r]={} end
-
   -- define num voices
   m.num_voices=4
 
@@ -283,12 +279,7 @@ function Granchild:set_toggle_callback(fn)
 end
 
 function Granchild:grid_key(x,y,z)
-  local now = util.time()
-  if self.last_press_time[y] and self.last_press_time[y][x] and (now - self.last_press_time[y][x] < 0.03) then
-      return -- Ignore bounce
-  end
-  if self.last_press_time[y] then self.last_press_time[y][x] = now end
-
+  -- FIX: REMOVED DEBOUNCE LOGIC (Pass-through)
   self:key_press(y,x,z==1)
   self:grid_redraw()
 end
@@ -299,14 +290,12 @@ function Granchild:key_press(row,col,on,elapsed_hold)
   end
   
   -- WHITELIST LOGIC FOR AUTO-REPEAT
-  -- Only allow auto-repeat (elapsed_hold) for specific parameter buttons.
   if elapsed_hold then
-      -- Whitelist: Column 1 (Params) OR Column 2 Rows 7-8 (Pitch)
       local is_col1 = (col % 4 == 1)
       local is_pitch = (col % 4 == 2) and (row == 7 or row == 8)
       
       if not (is_col1 or is_pitch) then
-          return -- Block repeat for everything else (Rec, Play, Tape, Scene, Timeline)
+          return -- Block repeat for everything else
       end
   end
   
